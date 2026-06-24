@@ -1,0 +1,5 @@
+{
+  "_help": "webhook_url に Discord か Slack の Webhook URL を貼ってください。空のままだと通知は送らず、HTMLレポートだけ作ります。signals は通知対象（strong=強い買い/強い売りのみ, all=買い系・売り系すべて）。",
+  "webhook_url": "",
+  "signals": "strong"
+}
