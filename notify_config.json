@@ -1,5 +1,6 @@
 {
-  "_help": "webhook_url に Discord か Slack の Webhook URL を貼ってください。空のままだと通知は送らず、HTMLレポートだけ作ります。signals は通知対象（strong=強い買い/強い売りのみ, all=買い系・売り系すべて）。",
+  "_help": "通知先を設定。クラウド(GitHub Actions)では Secret(LINE_TOKEN または WEBHOOK_URL)で渡すのでここは空のままでOK。ローカルで使うなら notify_config.local.json にコピーして貼る。line_token=LINEのチャネルアクセストークン / webhook_url=Discord/SlackのWebhook URL。signals: strong=強い買い/強い売りのみ, all=買い系・売り系すべて。",
+  "line_token": "",
   "webhook_url": "",
   "signals": "strong"
 }

@@ -37,6 +37,7 @@ jobs:
 
       - name: スクリーニング＋通知
         env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           SIGNALS: strong
         run: node screen_daily.mjs

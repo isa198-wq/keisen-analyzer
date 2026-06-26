@@ -77,12 +77,13 @@ const reportPath = new URL(`./signals_${today}.html`, outDir);
 fs.writeFileSync(reportPath, html);
 console.log("レポート: signals/signals_" + today + ".html");
 
-// --- 通知（Discord / Slack Webhook） ---
+// --- 通知（LINE Messaging API / Discord / Slack Webhook） ---
 async function notify() {
-  // クラウド（GitHub Actions）では Secret を環境変数 WEBHOOK_URL で渡す。なければ設定ファイル。
+  // クラウド(GitHub Actions)では Secret を環境変数で渡す。なければ設定ファイル。
+  const lineToken = (process.env.LINE_TOKEN || cfg.line_token || "").trim();
   const url = (process.env.WEBHOOK_URL || cfg.webhook_url || "").trim();
-  if (!url) {
-    console.log("notify_config.json の webhook_url が未設定のため、通知はスキップしました（レポートのみ）。");
+  if (!lineToken && !url) {
+    console.log("通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
     return;
   }
   if (buys.length === 0 && sells.length === 0) {
@@ -93,24 +94,52 @@ async function notify() {
     const shown = rows.slice(0, 30).map((r) => `${r.code} ${r.name}(${r.score > 0 ? "+" : ""}${r.score.toFixed(1)})`).join("、");
     return rows.length > 30 ? `${shown} …他${rows.length - 30}件` : shown || "なし";
   };
-  const lines = [
-    `**罫線スクリーニング ${today}**（対象${total}銘柄）`,
+  // 各サービス共通のプレーンテキスト
+  let msg = [
+    `罫線スクリーニング ${today}（対象${total}銘柄）`,
     `🔴 買い（${buys.length}）: ${listing(buys)}`,
     `🔵 売り（${sells.length}）: ${listing(sells)}`,
-  ];
-  let msg = lines.join("\n");
-  if (msg.length > 1900) msg = msg.slice(0, 1900) + " …(省略)";
+  ].join("\n");
 
-  const isSlack = /hooks\.slack\.com/.test(url);
-  const payload = isSlack ? { text: msg } : { content: msg };
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (res.ok) console.log(`通知を送信しました（${isSlack ? "Slack" : "Discord"}）。`);
-    else console.error(`通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    if (lineToken) {
+      // LINE Messaging API：友だち全員へブロードキャスト（テキストは最大5000字）
+      const text = msg.length > 4900 ? msg.slice(0, 4900) + " …(省略)" : msg;
+      const res = await fetch("https://api.line.me/v2/bot/message/broadcast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + lineToken },
+        body: JSON.stringify({ messages: [{ type: "text", text }] }),
+      });
+      if (res.ok) console.log("通知を送信しました（LINE）。");
+      else console.error(`LINE通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    } else {
+      // Webhook（URLで自動判別）。Make/Zapier等の汎用Webhookには構造化JSONを送る。
+      const clip = (s, n) => (s.length > n ? s.slice(0, n) + " …(省略)" : s);
+      const isSlack = /hooks\.slack\.com/.test(url);
+      const isDiscord = /discord(app)?\.com/.test(url);
+      const brief = (rows) => rows.map((r) => ({ code: r.code, name: r.name, score: +r.score.toFixed(1), close: r.close }));
+      let payload, label;
+      if (isSlack) { payload = { text: clip(msg, 2900) }; label = "Slack"; }
+      else if (isDiscord) { payload = { content: clip(msg, 1900) }; label = "Discord"; }
+      else {
+        payload = {
+          content: clip(msg, 4900),          // LINE等へ転送する本文（Makeで content を使う）
+          date: today,
+          buy_count: buys.length,
+          sell_count: sells.length,
+          buys: brief(buys),
+          sells: brief(sells),
+        };
+        label = "Webhook(Make等)";
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) console.log(`通知を送信しました（${label}）。`);
+      else console.error(`通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    }
   } catch (e) {
     console.error("通知の送信に失敗:", e.message);
   }
