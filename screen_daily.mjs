@@ -216,6 +216,17 @@ const reportPath = new URL(`./signals_${today}.html`, outDir);
 fs.writeFileSync(reportPath, html);
 console.log("レポート: signals/signals_" + today + ".html");
 
+// クラウド(GitHub Actions)では signals/ をキャッシュで引き継ぐため、肥大化しないよう
+// state とレポートを直近14日分だけ残す。ローカルは履歴を残したいので間引かない。
+if (process.env.GITHUB_ACTIONS) {
+  const keepLast = (re, n) => {
+    const files = fs.readdirSync(outDir).filter((f) => re.test(f)).sort();
+    for (const f of files.slice(0, Math.max(0, files.length - n))) fs.rmSync(new URL(f, outDir));
+  };
+  keepLast(/^state_\d{4}-\d{2}-\d{2}\.json$/, 14);
+  keepLast(/^signals_\d{4}-\d{2}-\d{2}\.html$/, 14);
+}
+
 // --- 通知（LINE Messaging API / Discord / Slack Webhook） ---
 async function notify() {
   // クラウド(GitHub Actions)では Secret を環境変数で渡す。なければ設定ファイル。

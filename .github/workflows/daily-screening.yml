@@ -35,6 +35,17 @@ jobs:
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
 
+      # 前回実行の signals/（state_*.json）を引き継ぎ、「本日の新規」差分を効かせる。
+      # key は毎回ユニーク（run_id）にして必ず保存し、restore-keys で直近のキャッシュを復元する
+      # ローリング方式。これが無いとクラウドでは毎回まっさらで全件が新規扱いになる。
+      - name: 前回の状態を復元（差分通知用キャッシュ）
+        uses: actions/cache@v4
+        with:
+          path: signals
+          key: signals-state-${{ github.run_id }}
+          restore-keys: |
+            signals-state-
+
       - name: スクリーニング＋通知
         env:
           LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
