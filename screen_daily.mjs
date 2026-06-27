@@ -33,31 +33,65 @@ for (const line of text.split(/\r?\n/).slice(1)) {
 
 // --- 全銘柄を判定 ---
 const wantAll = (process.env.SIGNALS || cfg.signals) === "all";
-const buys = [], sells = [];
+const buys = [], sells = [], tops = [], invs = [];
 for (const [sym, bars] of groups) {
   if (bars.length < 80) continue;
   const ci = sym.indexOf(":");
   const code = ci >= 0 ? sym.slice(0, ci) : sym;
   const name = ci >= 0 ? sym.slice(ci + 1) : sym;
-  const a = analyze(buildSeries(tfSeries(bars, "D")), "日");
+  const series = buildSeries(tfSeries(bars, "D"));
+  const a = analyze(series, "日");
   const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, close: a.last.close };
   const isBuy = wantAll ? a.vIdx >= 3 : a.vIdx === 4;   // strong: 強い買いのみ / all: 買い系
   const isSell = wantAll ? a.vIdx <= 1 : a.vIdx === 0;  // strong: 強い売りのみ / all: 売り系
   if (isBuy) buys.push(row);
   else if (isSell) sells.push(row);
+
+  // 三尊（天井=top）／逆三尊（底=inverse）は買い/売り判定に関わらず拾う。
+  // 形成中は常に、完成（ネックライン抜け済み）は直近10営業日以内に抜けた“今効いている”ものだけ。
+  const p = a.pattern;
+  if (p && (p.kind === "top" || p.kind === "inverse")) {
+    const brokeBarsAgo = p.broke ? series.length - 1 - p.breakI : null;
+    const recentBreak = brokeBarsAgo != null && brokeBarsAgo <= 10;
+    if (p.status === "forming" || recentBreak) {
+      const rec = {
+        code, name, close: a.last.close,
+        status: p.status,                         // forming / confirmed
+        brokeBarsAgo,                             // 何営業日前にネックを抜けたか
+        neck: p.neckLevel, target: p.target,
+        profile: p.vol ? p.vol.profile : null,    // ideal / partial / weak（出来高の理想度）
+        quality: p.quality,
+      };
+      if (p.kind === "top") tops.push(rec);
+      else invs.push(rec);
+    }
+  }
 }
 buys.sort((a, b) => b.score - a.score);
 sells.sort((a, b) => a.score - b.score);
+// 完成（ネックライン抜け）を上に、未完成（形成中）を下に。各内では信頼度(quality)順。
+const byStatus = (a, b) => (a.status === b.status ? b.quality - a.quality : a.status === "confirmed" ? -1 : 1);
+tops.sort(byStatus);
+invs.sort(byStatus);
 
 const today = new Date().toISOString().slice(0, 10);
 const total = groups.size;
-console.log(`判定完了: ${total}銘柄中  買い系 ${buys.length} / 売り系 ${sells.length}`);
+console.log(`判定完了: ${total}銘柄中  買い系 ${buys.length} / 売り系 ${sells.length}  三尊 ${tops.length} / 逆三尊 ${invs.length}`);
 
 // --- HTMLレポート ---
 const fmtPrice = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
 const tableRows = (rows) => rows.map((r) =>
   `<tr><td>${r.code}</td><td>${r.name}</td><td>${r.verdict}</td><td style="text-align:right">${r.score > 0 ? "+" : ""}${r.score.toFixed(1)}</td><td>${r.trend}</td><td style="text-align:right">${r.rsi != null ? r.rsi.toFixed(0) : "-"}</td><td style="text-align:right">${fmtPrice(r.close)}</td></tr>`
 ).join("");
+
+// 三尊（天井=割れ）／逆三尊（底=抜け）の状態ラベル。breakWord で「割れ／抜け」を切替。
+const patStatus = (r, breakWord) => (r.status === "confirmed" ? `ネックライン${breakWord}（${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"}）` : "形成中");
+const profileLabel = (p) => (p === "ideal" ? "理想的" : p === "partial" ? "やや伴う" : p === "weak" ? "弱い" : "-");
+const patRows = (rows, breakWord, cls) => rows.map((r) =>
+  `<tr><td>${r.code}</td><td>${r.name}</td><td class="${cls}">${patStatus(r, breakWord)}</td><td style="text-align:right">${fmtPrice(r.neck)}</td><td style="text-align:right">${fmtPrice(r.target)}</td><td>${profileLabel(r.profile)}</td><td style="text-align:right">${fmtPrice(r.close)}</td></tr>`
+).join("");
+const topRows = (rows) => patRows(rows, "割れ", "sell");
+const invRows = (rows) => patRows(rows, "抜け", "buy");
 const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><title>罫線シグナル ${today}</title>
 <style>body{font-family:system-ui,sans-serif;background:#0b101c;color:#e8edf5;margin:0;padding:24px}
 h1{font-size:20px}h2{font-size:16px;margin-top:24px}.buy{color:#ef5a4d}.sell{color:#3f8fd6}
@@ -70,6 +104,12 @@ th,td{border-bottom:1px solid #243049;padding:6px 10px;text-align:left}th{color:
 <table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>RSI</th><th>終値</th></tr>${tableRows(buys) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
 <h2 class="sell">売りサイン（${sells.length}）</h2>
 <table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>RSI</th><th>終値</th></tr>${tableRows(sells) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
+<h2 class="sell">三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
+<p class="muted">買い／売り判定に関わらず、三尊を形成中・完成している銘柄。終値がネックラインを割ると「完成」＝下落シグナル。</p>
+<table><tr><th>コード</th><th>銘柄</th><th>状態</th><th>ネックライン</th><th>目標</th><th>出来高</th><th>終値</th></tr>${topRows(tops) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
+<h2 class="buy">逆三尊（インバースH&S・大底）（${invs.length}）</h2>
+<p class="muted">買い／売り判定に関わらず、逆三尊を形成中・完成している銘柄。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
+<table><tr><th>コード</th><th>銘柄</th><th>状態</th><th>ネックライン</th><th>目標</th><th>出来高</th><th>終値</th></tr>${invRows(invs) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
 </html>`;
 const outDir = new URL("./signals/", ROOT);
 fs.mkdirSync(outDir, { recursive: true });
@@ -86,7 +126,7 @@ async function notify() {
     console.log("通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
     return;
   }
-  if (buys.length === 0 && sells.length === 0) {
+  if (buys.length === 0 && sells.length === 0 && tops.length === 0 && invs.length === 0) {
     console.log("サイン該当なし。通知はスキップしました。");
     return;
   }
@@ -100,15 +140,29 @@ async function notify() {
     if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
     return lines.join("\n") || "なし";
   };
+  const patLines = (rows, breakWord) => {
+    const cap = 50;
+    const lines = rows.slice(0, cap).map((r) =>
+      `${r.code} ${r.name} ${r.status === "confirmed" ? `${breakWord}(${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"})` : "形成中"} / ネック${fmtPrice(r.neck)} 目標${fmtPrice(r.target)} / ${fmtPrice(r.close)}`
+    );
+    if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
+    return lines.join("\n") || "なし";
+  };
   let msg = [
     `📊 罫線スクリーニング ${today}`,
-    `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length}`,
+    `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length}`,
     "",
     `🔴 買いサイン（${buys.length}）`,
     reportLines(buys),
     "",
     `🔵 売りサイン（${sells.length}）`,
     reportLines(sells),
+    "",
+    `⛰️ 三尊・天井（${tops.length}）`,
+    patLines(tops, "割れ"),
+    "",
+    `🛡 逆三尊・大底（${invs.length}）`,
+    patLines(invs, "抜け"),
   ].join("\n");
 
   try {
@@ -132,13 +186,18 @@ async function notify() {
       if (isSlack) { payload = { text: clip(msg, 2900) }; label = "Slack"; }
       else if (isDiscord) { payload = { content: clip(msg, 1900) }; label = "Discord"; }
       else {
+        const briefPat = (rows) => rows.map((r) => ({ code: r.code, name: r.name, status: r.status, broke_bars_ago: r.brokeBarsAgo, neck: r.neck, target: r.target, close: r.close }));
         payload = {
           content: clip(msg, 4900),          // LINE等へ転送する本文（Makeで content を使う）
           date: today,
           buy_count: buys.length,
           sell_count: sells.length,
+          top_count: tops.length,
+          inverse_count: invs.length,
           buys: brief(buys),
           sells: brief(sells),
+          tops: briefPat(tops),
+          inverses: briefPat(invs),
         };
         label = "Webhook(Make等)";
       }
