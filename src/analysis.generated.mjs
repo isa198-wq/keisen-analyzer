@@ -427,4 +427,4 @@ function analyze(series, unit = "日") {
   };
 }
 
-export { analyze, buildSeries, tfSeries };
+export { analyze, buildSeries, tfSeries, detectPattern };

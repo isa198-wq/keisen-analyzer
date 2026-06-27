@@ -57,7 +57,7 @@ ${helpers}
 
 ${body}
 
-export { analyze, buildSeries, tfSeries };
+export { analyze, buildSeries, tfSeries, detectPattern };
 `;
 
 fs.writeFileSync(new URL("./src/analysis.generated.mjs", import.meta.url), out);
