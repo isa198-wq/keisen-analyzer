@@ -90,15 +90,25 @@ async function notify() {
     console.log("サイン該当なし。通知はスキップしました。");
     return;
   }
-  const listing = (rows) => {
-    const shown = rows.slice(0, 30).map((r) => `${r.code} ${r.name}(${r.score > 0 ? "+" : ""}${r.score.toFixed(1)})`).join("、");
-    return rows.length > 30 ? `${shown} …他${rows.length - 30}件` : shown || "なし";
+  // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド RSI / 終値）
+  const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
+  const reportLines = (rows) => {
+    const cap = 50;
+    const lines = rows.slice(0, cap).map((r) =>
+      `${r.code} ${r.name} ${r.score > 0 ? "+" : ""}${r.score.toFixed(1)} / ${shortTrend(r.trend)} RSI${r.rsi != null ? r.rsi.toFixed(0) : "-"} / ${fmtPrice(r.close)}`
+    );
+    if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
+    return lines.join("\n") || "なし";
   };
-  // 各サービス共通のプレーンテキスト
   let msg = [
-    `罫線スクリーニング ${today}（対象${total}銘柄）`,
-    `🔴 買い（${buys.length}）: ${listing(buys)}`,
-    `🔵 売り（${sells.length}）: ${listing(sells)}`,
+    `📊 罫線スクリーニング ${today}`,
+    `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length}`,
+    "",
+    `🔴 買いサイン（${buys.length}）`,
+    reportLines(buys),
+    "",
+    `🔵 売りサイン（${sells.length}）`,
+    reportLines(sells),
   ].join("\n");
 
   try {
