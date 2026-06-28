@@ -90,8 +90,11 @@ def main():
         chunk = syms[i:i + CHUNK]                 # [(ticker, label), ...]
         tickers = [t for t, _ in chunk]
         print(f"取得中: {i + 1}〜{i + len(chunk)} / {len(syms)} 銘柄 ...")
+        # auto_adjust=True: 株式分割・配当で調整済みの連続した価格にする。
+        # （False だと分割日に価格が飛び、三尊検出やネックライン/目標が壊れる。
+        #   例: 2026-06-18 に 5802/5801/8053/4452 が分割し未調整だと偽の暴落になる）
         data = yf.download(tickers, period=PERIOD, interval="1d",
-                           auto_adjust=False, progress=False,
+                           auto_adjust=True, progress=False,
                            group_by="ticker", threads=True)
         for ticker, label in chunk:
             try:
