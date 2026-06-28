@@ -108,12 +108,17 @@ for (const [sym, bars] of groups) {
         const wp = analyze(buildSeries(tfSeries(bars, "W")), "週").pattern;
         weekly = !!(wp && wp.kind === p.kind);
       }
+      // 完成（ネックライン抜け）まで現値があと何%動けばよいか。三尊は下落・逆三尊は上昇で完成。
+      const neckPct = p.kind === "top"
+        ? ((a.last.close - p.neckLevel) / a.last.close) * 100
+        : ((p.neckLevel - a.last.close) / a.last.close) * 100;
       const rec = {
         code, name, close: a.last.close,
         status: p.status,                         // forming / confirmed
         brokeBarsAgo,                             // 何営業日前にネックを抜けたか
         neck: p.neckLevel, target: p.target,
         stop: p.stop, rr: p.rr,                   // #3 損切りライン・リスクリワード比
+        neckPct,                                  // 完成までに必要な値動き（%）。形成中の近さゲージ用
         profile: p.vol ? p.vol.profile : null,    // ideal / partial / weak（出来高の理想度）
         weekly,                                   // #4 週足でも同型が出ているか
         quality: p.quality,
@@ -126,7 +131,8 @@ for (const [sym, bars] of groups) {
 }
 // 完成（ネックライン抜け）を上に、未完成（形成中）を下に。各内では信頼度(quality)順。
 // 実際の並べ替えは下の「新規優先」ソートでまとめて行う。
-const byStatus = (a, b) => (a.status === b.status ? b.quality - a.quality : a.status === "confirmed" ? -1 : 1);
+// 完成を上に。完成どうしは信頼度(quality)順、形成中どうしはネックラインに近い順（あと少しで完成）。
+const byStatus = (a, b) => (a.status === b.status ? (a.status === "forming" ? a.neckPct - b.neckPct : b.quality - a.quality) : a.status === "confirmed" ? -1 : 1);
 
 const today = new Date().toISOString().slice(0, 10);
 const total = groups.size;
@@ -235,12 +241,23 @@ const patCard = (r, breakWord, kind) => {
   const rr = r.rr;
   const rrCol = rr >= 2 ? GREEN : rr >= 1 ? AMBER : RED;
   const rrW = Math.min(100, ((rr || 0) / 3) * 100);
+  // 形成中だけ「ネックラインまであと何%」ゲージ。近いほどバーが伸び、1%以内は色を強調。
+  let gauge = "";
+  if (r.status === "forming") {
+    const near = Math.max(0, r.neckPct);                 // 完成に必要な値動き(%)
+    const fill = Math.max(4, Math.min(100, (1 - Math.min(near, 5) / 5) * 100));
+    const arrow = kind === "top" ? "▼" : "▲";            // 三尊=下落で完成 / 逆三尊=上昇で完成
+    const gcol = near <= 1 ? accent : near <= 3 ? AMBER : "#56627d";
+    gauge = `<div class="gauge"><span>完成まで</span><div class="gbar"><i style="width:${fill.toFixed(0)}%;background:${gcol}"></i></div>` +
+      `<b style="color:${gcol}">${arrow}${near.toFixed(1)}%</b></div>`;
+  }
   return `<div class="card" style="border-top:3px solid ${accent}">${r.svg}<div class="cbody">` +
     `<div class="ctitle">${NEW(r)}<b>${r.code}</b> ${r.name} ${WK(r)}</div>` +
     `<div class="crow">${badge}<span class="prof">出来高 ${profileLabel(r.profile)}</span></div>` +
     `<div class="cstats"><div><span>目標</span><b style="color:${GREEN}" class="mono">${fmtPrice(r.target)}</b></div>` +
     `<div><span>損切</span><b style="color:${RED}" class="mono">${fmtPrice(r.stop)}</b></div>` +
     `<div><span>現値</span><b class="mono">${fmtPrice(r.close)}</b></div></div>` +
+    gauge +
     `<div class="rr"><span>RR ${rr != null ? rr.toFixed(1) : "—"}</span><div class="rrbar"><i style="width:${rrW.toFixed(0)}%;background:${rrCol}"></i></div></div>` +
     `</div></div>`;
 };
@@ -290,6 +307,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .cstats div{background:#0e1422;border-radius:6px;padding:5px 8px}.cstats span{display:block;font-size:10px;color:var(--mut)}.cstats b{font-size:14px}
 .rr{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mut)}.rr span{width:54px}
 .rrbar{flex:1;height:6px;background:#1c2536;border-radius:4px;overflow:hidden}.rrbar i{display:block;height:100%}
+.gauge{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mut);margin-bottom:8px}.gauge span{width:54px}.gauge b{width:48px;text-align:right;font-variant-numeric:tabular-nums}
+.gbar{flex:1;height:6px;background:#1c2536;border-radius:4px;overflow:hidden}.gbar i{display:block;height:100%}
 @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
 </style>
 <h1>罫線スクリーニング</h1>
@@ -354,11 +373,14 @@ async function notify() {
     if (rows.length > cap) lines.push(`…他${rows.length - cap}件（詳細はレポート）`);
     return lines.join("\n") || "なし";
   };
-  const patLines = (rows, breakWord) => {
+  const patLines = (rows, breakWord, arrow) => {
     const cap = 50;
-    const lines = rows.slice(0, cap).map((r) =>
-      `${tag(r)}${r.code} ${r.name} ${r.status === "confirmed" ? `${breakWord}(${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"})` : "形成中"} / ネック${fmtPrice(r.neck)} 目標${fmtPrice(r.target)} 損切${fmtPrice(r.stop)} RR${r.rr != null ? r.rr.toFixed(1) : "-"} / ${fmtPrice(r.close)}`
-    );
+    const lines = rows.slice(0, cap).map((r) => {
+      const state = r.status === "confirmed"
+        ? `${breakWord}(${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"})`
+        : `形成中 完成まで${arrow}${Math.max(0, r.neckPct).toFixed(1)}%`;
+      return `${tag(r)}${r.code} ${r.name} ${state} / ネック${fmtPrice(r.neck)} 目標${fmtPrice(r.target)} 損切${fmtPrice(r.stop)} RR${r.rr != null ? r.rr.toFixed(1) : "-"} / ${fmtPrice(r.close)}`;
+    });
     if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
     return lines.join("\n") || "なし";
   };
@@ -381,10 +403,10 @@ async function notify() {
     ...newBlock,
     "",
     `⛰️ 三尊・天井（${tops.length}）`,
-    patLines(tops, "割れ"),
+    patLines(tops, "割れ", "▼"),
     "",
     `🛡 逆三尊・大底（${invs.length}）`,
-    patLines(invs, "抜け"),
+    patLines(invs, "抜け", "▲"),
     "",
     `🔴 買いサイン（${buys.length}）`,
     reportLines(buys),
