@@ -31,42 +31,52 @@ for (const line of text.split(/\r?\n/).slice(1)) {
   });
 }
 
-// --- #5 ミニ・ローソク足チャート（ネックライン・目標・損切り・左肩/頭/右肩を描画したSVG文字列を返す） ---
+// --- #5 ミニ・ローソク足チャート（出来高バー＋利確/損切りゾーン＋ネックライン＋価格ラベル） ---
 function miniChart(series, p) {
-  const W = 360, H = 140, padL = 6, padR = 6, padT = 8, padB = 8;
+  const W = 360, H = 168, padL = 6, padR = 42, padT = 8;       // 右側は価格ラベル用に広め
+  const priceB = 116;                                          // 価格エリア下端
+  const volT = 126, volB = 162;                                // 出来高エリア
   const start = Math.max(0, p.p1.i - 5);
   const end = series.length - 1;
   const win = series.slice(start, end + 1);
   if (win.length < 3) return "";
-  const col = p.kind === "inverse" ? "#ef5a4d" : "#3f8fd6"; // 逆三尊=赤(上昇) / 三尊=青(下落)
-  let lo = Infinity, hi = -Infinity;
-  for (const b of win) { lo = Math.min(lo, b.low); hi = Math.max(hi, b.high); }
+  const col = p.kind === "inverse" ? "#ef5a4d" : "#3f8fd6";    // 逆三尊=赤(上昇) / 三尊=青(下落)
+  let lo = Infinity, hi = -Infinity, vmax = 0;
+  for (const b of win) { lo = Math.min(lo, b.low); hi = Math.max(hi, b.high); vmax = Math.max(vmax, b.volume || 0); }
   lo = Math.min(lo, p.target, p.stop); hi = Math.max(hi, p.target, p.stop);
-  const span = hi - lo || 1;
+  const span = (hi - lo) * 1.04 || 1; const mid = (hi + lo) / 2; const lo2 = mid - span / 2;
   const x = (i) => padL + ((i - start) / Math.max(1, end - start)) * (W - padL - padR);
-  const y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
-  const cw = Math.max(1.2, (W - padL - padR) / win.length * 0.6);
-  let candles = "";
+  const y = (v) => padT + (1 - (v - lo2) / span) * (priceB - padT);
+  const vy = (v) => volB - (vmax ? (v / vmax) : 0) * (volB - volT);
+  const cw = Math.max(1.2, (W - padL - padR) / win.length * 0.62);
+  const RX = W - padR + 2;
+  // 利確ゾーン（ネック→目標）と損切りゾーン（ネック→損切り）を淡く塗る
+  const yN = y(p.neckLevel), yT = y(p.target), yS = y(p.stop);
+  const band = (y1, y2, c) => `<rect x="${padL}" y="${Math.min(y1, y2).toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${Math.abs(y2 - y1).toFixed(1)}" fill="${c}" opacity="0.10"/>`;
+  const zones = band(yN, yT, "#3fb27f") + band(yN, yS, "#c4543f");
+  let candles = "", vols = "";
   for (let k = 0; k < win.length; k++) {
     const b = win[k], cx = x(start + k);
-    const up = b.close >= b.open;
-    const c = up ? "#3fb27f" : "#c4543f";
+    const up = b.close >= b.open, c = up ? "#3fb27f" : "#c4543f";
     candles += `<line x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" y1="${y(b.high).toFixed(1)}" y2="${y(b.low).toFixed(1)}" stroke="${c}" stroke-width="0.8"/>`;
     const yo = y(b.open), yc = y(b.close), top = Math.min(yo, yc), h = Math.max(1, Math.abs(yo - yc));
     candles += `<rect x="${(cx - cw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}"/>`;
+    vols += `<rect x="${(cx - cw / 2).toFixed(1)}" y="${vy(b.volume || 0).toFixed(1)}" width="${cw.toFixed(1)}" height="${(volB - vy(b.volume || 0)).toFixed(1)}" fill="${c}" opacity="0.5"/>`;
   }
-  // ネックライン
+  const volBase = `<line x1="${padL}" x2="${W - padR}" y1="${volB}" y2="${volB}" stroke="#243049" stroke-width="0.6"/><text x="${RX}" y="${volT + 6}" fill="#56627d" font-size="7">出来高</text>`;
   const neck = `<line x1="${x(start).toFixed(1)}" y1="${y(p.neckAt(start)).toFixed(1)}" x2="${x(end).toFixed(1)}" y2="${y(p.neckAt(end)).toFixed(1)}" stroke="#c8a24a" stroke-width="1" stroke-dasharray="3 2"/>`;
-  // 目標・損切り
-  const tgt = `<line x1="${padL}" x2="${W - padR}" y1="${y(p.target).toFixed(1)}" y2="${y(p.target).toFixed(1)}" stroke="#3fb27f" stroke-width="0.8" stroke-dasharray="2 3" opacity="0.8"/>`;
-  const stp = `<line x1="${padL}" x2="${W - padR}" y1="${y(p.stop).toFixed(1)}" y2="${y(p.stop).toFixed(1)}" stroke="#c4543f" stroke-width="0.8" stroke-dasharray="2 3" opacity="0.8"/>`;
-  // 左肩/頭/右肩マーカー
+  const hline = (yv, c) => `<line x1="${padL}" x2="${W - padR}" y1="${yv.toFixed(1)}" y2="${yv.toFixed(1)}" stroke="${c}" stroke-width="0.8" stroke-dasharray="2 3" opacity="0.85"/>`;
+  // 右側の価格ラベル
+  const fmtL = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
+  const lab = (yv, c, t) => `<text x="${RX}" y="${(yv + 3).toFixed(1)}" fill="${c}" font-size="8" font-family="monospace">${t}</text>`;
+  const lines = hline(yT, "#3fb27f") + hline(yS, "#c4543f") +
+    lab(yT, "#3fb27f", fmtL(p.target)) + lab(yS, "#c4543f", fmtL(p.stop)) + lab(yN, "#c8a24a", fmtL(p.neckLevel));
   const labels = ["左", "頭", "右"];
   const marks = [p.p1, p.p2, p.p3].map((pt, idx) =>
     `<circle cx="${x(pt.i).toFixed(1)}" cy="${y(pt.price).toFixed(1)}" r="2" fill="${col}"/>` +
     `<text x="${x(pt.i).toFixed(1)}" y="${(y(pt.price) + (p.kind === "inverse" ? 11 : -5)).toFixed(1)}" fill="${col}" font-size="8" text-anchor="middle">${labels[idx]}</text>`
   ).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0e1422;border:1px solid #243049;border-radius:4px">${candles}${neck}${tgt}${stp}${marks}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0e1422;border:1px solid #243049;border-radius:4px">${zones}${vols}${volBase}${candles}${neck}${lines}${marks}</svg>`;
 }
 
 // --- 全銘柄を判定 ---
@@ -79,7 +89,7 @@ for (const [sym, bars] of groups) {
   const name = ci >= 0 ? sym.slice(ci + 1) : sym;
   const series = buildSeries(tfSeries(bars, "D"));
   const a = analyze(series, "日");
-  const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, close: a.last.close };
+  const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, close: a.last.close, spark: series.slice(-24).map((b) => b.close) };
   const isBuy = wantAll ? a.vIdx >= 3 : a.vIdx === 4;   // strong: 強い買いのみ / all: 買い系
   const isSell = wantAll ? a.vIdx <= 1 : a.vIdx === 0;  // strong: 強い売りのみ / all: 売り系
   if (isBuy) buys.push(row);
@@ -178,6 +188,30 @@ const stat = (label, n, nn, col) =>
   `<div class="stat" style="--c:${col}"><div class="slabel">${label}</div><div class="snum">${n}</div>` +
   `<div class="snew">${nn > 0 ? `🆕 ${nn} 新規` : '<span class="muted">新規なし</span>'}</div></div>`;
 
+// 地合いバー：買い／売り／中立の比率を1本の横バーで
+const breadthBar = () => {
+  const neu = Math.max(0, total - buys.length - sells.length);
+  const pct = (x) => ((x / total) * 100).toFixed(1);
+  return `<div class="breadth"><div class="bbar">` +
+    `<span style="width:${pct(buys.length)}%;background:${UP}" title="買い ${buys.length}"></span>` +
+    `<span style="width:${pct(neu)}%;background:#2b3550" title="中立 ${neu}"></span>` +
+    `<span style="width:${pct(sells.length)}%;background:${DOWN}" title="売り ${sells.length}"></span></div>` +
+    `<div class="blabels"><span style="color:${UP}">買い ${buys.length}（${pct(buys.length)}%）</span>` +
+    `<span class="muted">中立 ${neu}</span>` +
+    `<span style="color:${DOWN}">売り ${sells.length}（${pct(sells.length)}%）</span></div></div>`;
+};
+
+// 値動きスパークライン（直近24本の終値）
+const sparkline = (closes) => {
+  if (!closes || closes.length < 2) return "";
+  const w = 64, h = 18, lo = Math.min(...closes), hi = Math.max(...closes), sp = hi - lo || 1;
+  const X = (i) => (i / (closes.length - 1)) * (w - 2) + 1;
+  const Y = (v) => h - 2 - ((v - lo) / sp) * (h - 4);
+  const d = closes.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ");
+  const col = closes[closes.length - 1] >= closes[0] ? GREEN : RED;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><path d="${d}" fill="none" stroke="${col}" stroke-width="1.2"/></svg>`;
+};
+
 // 買い/売りテーブル：スコアを横バーで可視化
 const maxAbs = Math.max(5, ...buys.map((r) => Math.abs(r.score)), ...sells.map((r) => Math.abs(r.score)));
 const scoreCell = (s) => {
@@ -188,7 +222,7 @@ const scoreCell = (s) => {
 };
 const tableRows = (rows) => rows.map((r) =>
   `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
-  `<td>${r.trend}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
+  `<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
 // 三尊/逆三尊：チャート付きの大きめカード
@@ -214,7 +248,7 @@ const cards = (rows, breakWord, kind) => rows.length
   ? `<div class="cards">${rows.map((r) => patCard(r, breakWord, kind)).join("")}</div>`
   : '<p class="muted">該当なし</p>';
 
-const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>終値</th></tr>` +
+const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>推移(24日)</th><th>終値</th></tr>` +
   `${tableRows(rows) || '<tr><td colspan=6 class="muted">該当なし</td></tr>'}</table>`;
 
 const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>罫線シグナル ${today}</title>
@@ -239,6 +273,11 @@ th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left}th{co
 tr:hover td{background:rgba(255,255,255,.02)}
 .scell{width:170px}.swrap{display:flex;align-items:center;gap:8px}.sval{width:42px;text-align:right;font-variant-numeric:tabular-nums}
 .sbar{flex:1;height:7px;background:#1c2536;border-radius:4px;overflow:hidden}.sbar i{display:block;height:100%}
+.spk{width:72px}.spark{display:block}
+/* 地合いバー */
+.breadth{margin:6px 0 4px}
+.bbar{display:flex;height:14px;border-radius:7px;overflow:hidden;border:1px solid var(--line)}.bbar span{display:block;height:100%}
+.blabels{display:flex;justify-content:space-between;font-size:11px;margin-top:4px}
 /* カード */
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:10px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
@@ -262,6 +301,7 @@ ${stat("🔵 売りサイン", sells.length, nNew(sells), DOWN)}
 ${stat("⛰️ 三尊（天井）", tops.length, nNew(tops), DOWN)}
 ${stat("🛡 逆三尊（大底）", invs.length, nNew(invs), UP)}
 </div>
+${breadthBar()}
 <h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。</p>
 ${cards(tops, "割れ", "top")}
