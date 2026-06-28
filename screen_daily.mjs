@@ -261,9 +261,19 @@ const scoreCell = (s) => {
   return `<div class="swrap"><span class="sval">${s > 0 ? "+" : ""}${s.toFixed(1)}</span>` +
     `<div class="sbar"><i style="width:${w.toFixed(0)}%;background:${col}"></i></div></div>`;
 };
+// RSIヒート：買われすぎ(>70)=暖色／売られすぎ(<30)=寒色。過熱度を背景＋文字色で可視化。
+const rsiHeat = (v) => {
+  if (v == null || isNaN(v)) return '<span class="rsi" style="color:#56627d">—</span>';
+  let bg = "transparent", fg = "#aab4c6", tag = "";
+  if (v >= 70) { bg = "rgba(224,112,58,.30)"; fg = "#f0a878"; tag = "買われ"; }
+  else if (v >= 60) { bg = "rgba(224,112,58,.15)"; fg = "#e0b090"; }
+  else if (v <= 30) { bg = "rgba(63,143,214,.32)"; fg = "#84baea"; tag = "売られ"; }
+  else if (v <= 40) { bg = "rgba(63,143,214,.16)"; fg = "#9ec2e2"; }
+  return `<span class="rsi" style="background:${bg};color:${fg}">${v.toFixed(0)}${tag ? `<i>${tag}</i>` : ""}</span>`;
+};
 const tableRows = (rows) => rows.map((r) =>
   `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
-  `<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
+  `<td>${rsiHeat(r.rsi)}</td><td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
 // 三尊/逆三尊：チャート付きの大きめカード
@@ -302,8 +312,8 @@ const cards = (rows, breakWord, kind) => rows.length
   ? `<div class="cards">${rows.map((r) => patCard(r, breakWord, kind)).join("")}</div>`
   : '<p class="muted">該当なし</p>';
 
-const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>推移(24日)</th><th>終値</th></tr>` +
-  `${tableRows(rows) || '<tr><td colspan=6 class="muted">該当なし</td></tr>'}</table>`;
+const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>RSI</th><th>推移(24日)</th><th>終値</th></tr>` +
+  `${tableRows(rows) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>`;
 
 const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>罫線シグナル ${today}</title>
 <style>
@@ -328,6 +338,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .scell{width:170px}.swrap{display:flex;align-items:center;gap:8px}.sval{width:42px;text-align:right;font-variant-numeric:tabular-nums}
 .sbar{flex:1;height:7px;background:#1c2536;border-radius:4px;overflow:hidden}.sbar i{display:block;height:100%}
 .spk{width:72px}.spark{display:block}
+.rsi{display:inline-block;min-width:26px;text-align:center;padding:1px 6px;border-radius:5px;font-variant-numeric:tabular-nums;font-size:12px}
+.rsi i{font-style:normal;font-size:9px;margin-left:3px;opacity:.85}
 /* 地合いバー */
 .breadth{margin:6px 0 4px}
 .bbar{display:flex;height:14px;border-radius:7px;overflow:hidden;border:1px solid var(--line)}.bbar span{display:block;height:100%}
@@ -361,7 +373,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 </style>
 <h1>罫線スクリーニング</h1>
 <p class="sub">${today}　／　対象 ${total} 銘柄　／　通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}</p>
-<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span></div>
+<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip"><span style="color:#f0a878">RSI70+買われすぎ</span>／<span style="color:#84baea">30-売られすぎ</span></span></div>
 <div class="stats">
 ${stat("🔴 買いサイン", buys.length, nNew(buys), UP)}
 ${stat("🔵 売りサイン", sells.length, nNew(sells), DOWN)}
