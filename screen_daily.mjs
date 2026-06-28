@@ -79,6 +79,38 @@ function miniChart(series, p) {
   return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0e1422;border:1px solid #243049;border-radius:4px">${zones}${vols}${volBase}${candles}${neck}${lines}${marks}</svg>`;
 }
 
+// --- クリック拡大用の週足/月足チャート（出来高・現値ライン付きのプレーンなローソク足） ---
+function tfChart(daily, tf, accent, label) {
+  const series = buildSeries(tfSeries(daily, tf));
+  const n = series.length;
+  if (n < 3) return "";
+  const W = 720, H = 300, padL = 8, padR = 54, padT = 12, priceB = 212, volT = 226, volB = 290;
+  const fp = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
+  let lo = Infinity, hi = -Infinity, vmax = 0;
+  for (const b of series) { lo = Math.min(lo, b.low); hi = Math.max(hi, b.high); vmax = Math.max(vmax, b.volume || 0); }
+  const span = (hi - lo) * 1.05 || 1, lo2 = (hi + lo) / 2 - span / 2;
+  const x = (i) => padL + (i / Math.max(1, n - 1)) * (W - padL - padR);
+  const y = (v) => padT + (1 - (v - lo2) / span) * (priceB - padT);
+  const vy = (v) => volB - (vmax ? v / vmax : 0) * (volB - volT);
+  const cw = Math.max(1.5, ((W - padL - padR) / n) * 0.66);
+  let cs = "", vs = "";
+  for (let i = 0; i < n; i++) {
+    const b = series[i], cx = x(i), up = b.close >= b.open, c = up ? "#3fb27f" : "#c4543f";
+    cs += `<line x1="${cx.toFixed(0)}" x2="${cx.toFixed(0)}" y1="${y(b.high).toFixed(0)}" y2="${y(b.low).toFixed(0)}" stroke="${c}" stroke-width="1"/>`;
+    const yo = y(b.open), yc = y(b.close), top = Math.min(yo, yc), h = Math.max(1, Math.abs(yo - yc));
+    cs += `<rect x="${(cx - cw / 2).toFixed(0)}" y="${top.toFixed(0)}" width="${cw.toFixed(1)}" height="${h.toFixed(0)}" fill="${c}"/>`;
+    vs += `<rect x="${(cx - cw / 2).toFixed(0)}" y="${vy(b.volume || 0).toFixed(0)}" width="${cw.toFixed(1)}" height="${(volB - vy(b.volume || 0)).toFixed(0)}" fill="${c}" opacity="0.5"/>`;
+  }
+  const last = series[n - 1].close, yl = y(last);
+  const lastLine = `<line x1="${padL}" x2="${W - padR}" y1="${yl.toFixed(0)}" y2="${yl.toFixed(0)}" stroke="${accent}" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.85"/>` +
+    `<text x="${W - padR + 3}" y="${(yl + 3).toFixed(0)}" fill="${accent}" font-size="11" font-family="monospace">${fp(last)}</text>`;
+  const hi2 = `<text x="${W - padR + 3}" y="${(padT + 4).toFixed(0)}" fill="#56627d" font-size="9" font-family="monospace">${fp(hi)}</text>`;
+  const lo3 = `<text x="${W - padR + 3}" y="${(priceB - 1).toFixed(0)}" fill="#56627d" font-size="9" font-family="monospace">${fp(lo)}</text>`;
+  const vlab = `<line x1="${padL}" x2="${W - padR}" y1="${volB}" y2="${volB}" stroke="#243049" stroke-width="0.6"/><text x="${W - padR + 3}" y="${volT + 8}" fill="#56627d" font-size="9">出来高</text>`;
+  return `<figure class="zchart"><figcaption>${label}（${n}本）</figcaption>` +
+    `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0e1422;border:1px solid #243049;border-radius:6px">${vs}${vlab}${cs}${lastLine}${hi2}${lo3}</svg></figure>`;
+}
+
 // --- 全銘柄を判定 ---
 const wantAll = (process.env.SIGNALS || cfg.signals) === "all";
 const buys = [], sells = [], tops = [], invs = [];
@@ -112,6 +144,7 @@ for (const [sym, bars] of groups) {
       const neckPct = p.kind === "top"
         ? ((a.last.close - p.neckLevel) / a.last.close) * 100
         : ((p.neckLevel - a.last.close) / a.last.close) * 100;
+      const accent = p.kind === "top" ? "#3f8fd6" : "#ef5a4d";
       const rec = {
         code, name, close: a.last.close,
         status: p.status,                         // forming / confirmed
@@ -123,6 +156,8 @@ for (const [sym, bars] of groups) {
         weekly,                                   // #4 週足でも同型が出ているか
         quality: p.quality,
         svg: miniChart(series, p),                // #5 ミニ・ローソク足チャート（ネックライン付き）
+        wSvg: tfChart(bars, "W", accent, "週足"), // クリック拡大用：週足
+        mSvg: tfChart(bars, "M", accent, "月足"), // クリック拡大用：月足
       };
       if (p.kind === "top") tops.push(rec);
       else invs.push(rec);
@@ -251,7 +286,9 @@ const patCard = (r, breakWord, kind) => {
     gauge = `<div class="gauge"><span>完成まで</span><div class="gbar"><i style="width:${fill.toFixed(0)}%;background:${gcol}"></i></div>` +
       `<b style="color:${gcol}">${arrow}${near.toFixed(1)}%</b></div>`;
   }
-  return `<div class="card" style="border-top:3px solid ${accent}">${r.svg}<div class="cbody">` +
+  return `<div class="card" style="border-top:3px solid ${accent}" data-code="${r.code}" data-name="${r.name}">` +
+    `<div class="chartwrap" title="クリックで拡大（日足・週足・月足）">${r.svg}<span class="zhint">⤢ 拡大</span></div>` +
+    `<div class="zoom" hidden>${r.wSvg}${r.mSvg}</div><div class="cbody">` +
     `<div class="ctitle">${NEW(r)}<b>${r.code}</b> ${r.name} ${WK(r)}</div>` +
     `<div class="crow">${badge}<span class="prof">出来高 ${profileLabel(r.profile)}</span></div>` +
     `<div class="cstats"><div><span>目標</span><b style="color:${GREEN}" class="mono">${fmtPrice(r.target)}</b></div>` +
@@ -309,6 +346,17 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rrbar{flex:1;height:6px;background:#1c2536;border-radius:4px;overflow:hidden}.rrbar i{display:block;height:100%}
 .gauge{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mut);margin-bottom:8px}.gauge span{width:54px}.gauge b{width:48px;text-align:right;font-variant-numeric:tabular-nums}
 .gbar{flex:1;height:6px;background:#1c2536;border-radius:4px;overflow:hidden}.gbar i{display:block;height:100%}
+/* クリック拡大 */
+.chartwrap{position:relative;cursor:zoom-in}
+.zhint{position:absolute;top:6px;right:6px;font-size:10px;color:#cdd6e6;background:rgba(11,16,28,.7);border:1px solid var(--line);border-radius:5px;padding:1px 6px;pointer-events:none}
+.chartwrap:hover .zhint{background:rgba(40,52,80,.9)}
+.modal{position:fixed;inset:0;background:rgba(4,8,16,.82);display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow:auto;z-index:50}
+.modal[hidden]{display:none}
+.mbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:780px;width:100%;padding:14px 16px 18px}
+.mhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.mhead b{font-size:16px}.mclose{background:transparent;border:1px solid var(--line);color:var(--ink);border-radius:6px;font-size:16px;width:30px;height:30px;cursor:pointer}
+.mbody .zchart{margin:0 0 14px}.mbody figcaption{font-size:12px;color:var(--mut);margin-bottom:3px}
+.mbody svg{width:100%;height:auto;display:block;border-radius:6px}
 @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
 </style>
 <h1>罫線スクリーニング</h1>
@@ -331,6 +379,26 @@ ${cards(invs, "抜け", "inverse")}
 ${buyTable(buys)}
 <h2 class="sell">🔵 売りサイン（${sells.length}）</h2>
 ${buyTable(sells)}
+<div id="modal" class="modal" hidden><div class="mbox"><div class="mhead"><b id="mtitle"></b><button class="mclose" id="mclose" aria-label="閉じる">×</button></div><div id="mbody" class="mbody"></div></div></div>
+<script>
+(function(){
+  var modal=document.getElementById('modal'),mtitle=document.getElementById('mtitle'),mbody=document.getElementById('mbody');
+  function close(){modal.hidden=true;mbody.innerHTML='';}
+  document.addEventListener('click',function(e){
+    var w=e.target.closest('.chartwrap');
+    if(w){var card=w.closest('.card');
+      mtitle.textContent=card.dataset.code+' '+card.dataset.name;
+      mbody.innerHTML='';
+      var d=document.createElement('figure');d.className='zchart';
+      d.innerHTML='<figcaption>日足（パターン）</figcaption>'+w.querySelector('svg').outerHTML;
+      mbody.appendChild(d);
+      card.querySelectorAll('.zoom > figure').forEach(function(f){mbody.appendChild(f.cloneNode(true));});
+      modal.hidden=false;return;}
+    if(e.target===modal||e.target.id==='mclose'){close();}
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
+})();
+</script>
 </html>`;
 const outDir = new URL("./signals/", ROOT);
 fs.mkdirSync(outDir, { recursive: true });
