@@ -244,11 +244,11 @@ async function notify() {
   const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
   const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "");
   const reportLines = (rows) => {
-    const cap = 50;
+    const cap = 25;  // LINE本文(4900字)に買い・売り両方を収めるため各25件まで（全件はHTMLレポート参照）
     const lines = rows.slice(0, cap).map((r) =>
       `${tag(r)}${r.code} ${r.name} ${r.score > 0 ? "+" : ""}${r.score.toFixed(1)} / ${shortTrend(r.trend)} RSI${r.rsi != null ? r.rsi.toFixed(0) : "-"} / ${fmtPrice(r.close)}`
     );
-    if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
+    if (rows.length > cap) lines.push(`…他${rows.length - cap}件（詳細はレポート）`);
     return lines.join("\n") || "なし";
   };
   const patLines = (rows, breakWord) => {
@@ -270,22 +270,24 @@ async function notify() {
   const newBlock = newHi.length
     ? ["", `🆕 本日の新規（${newHi.length}）`, newHi.slice(0, 30).join("\n") + (newHi.length > 30 ? `\n…他${newHi.length - 30}件` : "")]
     : [];
+  // LINEは本文を4900字で切るため、注目度の高い順に並べる：
+  // 新規ハイライト → 三尊/逆三尊（今回の主目的）→ 買い/売りリスト（件数が多く長い）。
   let msg = [
     `📊 罫線スクリーニング ${today}`,
     `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length}`,
     ...newBlock,
-    "",
-    `🔴 買いサイン（${buys.length}）`,
-    reportLines(buys),
-    "",
-    `🔵 売りサイン（${sells.length}）`,
-    reportLines(sells),
     "",
     `⛰️ 三尊・天井（${tops.length}）`,
     patLines(tops, "割れ"),
     "",
     `🛡 逆三尊・大底（${invs.length}）`,
     patLines(invs, "抜け"),
+    "",
+    `🔴 買いサイン（${buys.length}）`,
+    reportLines(buys),
+    "",
+    `🔵 売りサイン（${sells.length}）`,
+    reportLines(sells),
   ].join("\n");
 
   try {
