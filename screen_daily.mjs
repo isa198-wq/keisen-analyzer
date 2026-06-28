@@ -166,49 +166,112 @@ fs.writeFileSync(new URL(`./state_${today}.json`, stateDir), JSON.stringify(snap
 const nNew = (rows) => rows.filter((r) => r.isNew).length;
 console.log(`判定完了: ${total}銘柄中  買い系 ${buys.length}(新${nNew(buys)}) / 売り系 ${sells.length}(新${nNew(sells)})  三尊 ${tops.length}(新${nNew(tops)}) / 逆三尊 ${invs.length}(新${nNew(invs)})`);
 
-// --- HTMLレポート ---
+// --- HTMLレポート（ダッシュボード風） ---
+const UP = "#ef5a4d", DOWN = "#3f8fd6", GREEN = "#3fb27f", AMBER = "#c8a24a", RED = "#c4543f";
 const fmtPrice = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
 const NEW = (r) => (r.isNew ? '<span class="new">🆕</span>' : "");
+const WK = (r) => (r.weekly ? '<span class="wk">週足◎</span>' : "");
+const profileLabel = (p) => (p === "ideal" ? "理想的" : p === "partial" ? "やや伴う" : p === "weak" ? "弱い" : "—");
+
+// 上部サマリーのスタットカード
+const stat = (label, n, nn, col) =>
+  `<div class="stat" style="--c:${col}"><div class="slabel">${label}</div><div class="snum">${n}</div>` +
+  `<div class="snew">${nn > 0 ? `🆕 ${nn} 新規` : '<span class="muted">新規なし</span>'}</div></div>`;
+
+// 買い/売りテーブル：スコアを横バーで可視化
+const maxAbs = Math.max(5, ...buys.map((r) => Math.abs(r.score)), ...sells.map((r) => Math.abs(r.score)));
+const scoreCell = (s) => {
+  const w = Math.min(100, (Math.abs(s) / maxAbs) * 100);
+  const col = s > 0 ? UP : DOWN;
+  return `<div class="swrap"><span class="sval">${s > 0 ? "+" : ""}${s.toFixed(1)}</span>` +
+    `<div class="sbar"><i style="width:${w.toFixed(0)}%;background:${col}"></i></div></div>`;
+};
 const tableRows = (rows) => rows.map((r) =>
-  `<tr><td>${NEW(r)}${r.code}</td><td>${r.name}</td><td>${r.verdict}</td><td style="text-align:right">${r.score > 0 ? "+" : ""}${r.score.toFixed(1)}</td><td>${r.trend}</td><td style="text-align:right">${r.rsi != null ? r.rsi.toFixed(0) : "-"}</td><td style="text-align:right">${fmtPrice(r.close)}</td></tr>`
+  `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
+  `<td>${r.trend}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
-// 三尊（天井=割れ）／逆三尊（底=抜け）の状態ラベル。breakWord で「割れ／抜け」を切替。
-const patStatus = (r, breakWord) => (r.status === "confirmed" ? `ネックライン${breakWord}（${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"}）` : "形成中");
-const profileLabel = (p) => (p === "ideal" ? "理想的" : p === "partial" ? "やや伴う" : p === "weak" ? "弱い" : "-");
-const WK = (r) => (r.weekly ? '<span class="wk">週足◎</span>' : "");
-const patRows = (rows, breakWord, cls) => rows.map((r) =>
-  `<tr><td>${NEW(r)}${r.code}</td><td>${r.name} ${WK(r)}</td><td class="${cls}">${patStatus(r, breakWord)}</td><td style="text-align:right">${fmtPrice(r.neck)}</td><td style="text-align:right">${fmtPrice(r.target)}</td><td style="text-align:right">${fmtPrice(r.stop)}</td><td style="text-align:right">${r.rr != null ? r.rr.toFixed(1) : "-"}</td><td>${profileLabel(r.profile)}</td><td style="text-align:right">${fmtPrice(r.close)}</td></tr>`
-).join("");
-const topRows = (rows) => patRows(rows, "割れ", "sell");
-const invRows = (rows) => patRows(rows, "抜け", "buy");
-// #5 チャートギャラリー（パターン銘柄をミニチャートで一覧）
-const gallery = (rows, breakWord) => rows.map((r) =>
-  `<figure class="chart">${r.svg}<figcaption>${NEW(r)}${r.code} ${r.name} ${WK(r)}<br><span class="muted">${patStatus(r, breakWord)} ｜ 目標${fmtPrice(r.target)} / 損切${fmtPrice(r.stop)} / RR${r.rr != null ? r.rr.toFixed(1) : "-"}</span></figcaption></figure>`
-).join("");
-const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><title>罫線シグナル ${today}</title>
-<style>body{font-family:system-ui,sans-serif;background:#0b101c;color:#e8edf5;margin:0;padding:24px}
-h1{font-size:20px}h2{font-size:16px;margin-top:24px}.buy{color:#ef5a4d}.sell{color:#3f8fd6}
-table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}
-th,td{border-bottom:1px solid #243049;padding:6px 10px;text-align:left}th{color:#8aa;}
-.muted{color:#8090a8;font-size:12px}
-.new{margin-right:4px}.wk{color:#c8a24a;font-size:11px;border:1px solid #c8a24a;border-radius:3px;padding:0 4px;margin-left:4px}
-.grid{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px}
-figure.chart{margin:0;width:360px}figure.chart figcaption{font-size:12px;margin-top:4px}</style>
-<h1>罫線スクリーニング　${today}</h1>
-<p class="muted">対象 ${total} 銘柄／通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}／🆕＝前回比の新規・週足◎＝週足でも同型</p>
-<h2 class="buy">買いサイン（${buys.length}）</h2>
-<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>RSI</th><th>終値</th></tr>${tableRows(buys) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
-<h2 class="sell">売りサイン（${sells.length}）</h2>
-<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>RSI</th><th>終値</th></tr>${tableRows(sells) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>
-<h2 class="sell">三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
-<p class="muted">買い／売り判定に関わらず、三尊を形成中・完成している銘柄。終値がネックラインを割ると「完成」＝下落シグナル。</p>
-<table><tr><th>コード</th><th>銘柄</th><th>状態</th><th>ネックライン</th><th>目標</th><th>損切り</th><th>RR</th><th>出来高</th><th>終値</th></tr>${topRows(tops) || '<tr><td colspan=9 class="muted">該当なし</td></tr>'}</table>
-<div class="grid">${gallery(tops, "割れ")}</div>
-<h2 class="buy">逆三尊（インバースH&S・大底）（${invs.length}）</h2>
-<p class="muted">買い／売り判定に関わらず、逆三尊を形成中・完成している銘柄。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
-<table><tr><th>コード</th><th>銘柄</th><th>状態</th><th>ネックライン</th><th>目標</th><th>損切り</th><th>RR</th><th>出来高</th><th>終値</th></tr>${invRows(invs) || '<tr><td colspan=9 class="muted">該当なし</td></tr>'}</table>
-<div class="grid">${gallery(invs, "抜け")}</div>
+// 三尊/逆三尊：チャート付きの大きめカード
+const patStatusText = (r, breakWord) => (r.status === "confirmed" ? `ネックライン${breakWord}（${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"}）` : "形成中");
+const patCard = (r, breakWord, kind) => {
+  const accent = kind === "top" ? DOWN : UP;
+  const badge = r.status === "confirmed"
+    ? `<span class="badge" style="background:${accent};color:#0b101c">${breakWord}完成 ${r.brokeBarsAgo === 0 ? "本日" : r.brokeBarsAgo + "日前"}</span>`
+    : `<span class="badge out" style="border-color:${accent};color:${accent}">形成中</span>`;
+  const rr = r.rr;
+  const rrCol = rr >= 2 ? GREEN : rr >= 1 ? AMBER : RED;
+  const rrW = Math.min(100, ((rr || 0) / 3) * 100);
+  return `<div class="card" style="border-top:3px solid ${accent}">${r.svg}<div class="cbody">` +
+    `<div class="ctitle">${NEW(r)}<b>${r.code}</b> ${r.name} ${WK(r)}</div>` +
+    `<div class="crow">${badge}<span class="prof">出来高 ${profileLabel(r.profile)}</span></div>` +
+    `<div class="cstats"><div><span>目標</span><b style="color:${GREEN}" class="mono">${fmtPrice(r.target)}</b></div>` +
+    `<div><span>損切</span><b style="color:${RED}" class="mono">${fmtPrice(r.stop)}</b></div>` +
+    `<div><span>現値</span><b class="mono">${fmtPrice(r.close)}</b></div></div>` +
+    `<div class="rr"><span>RR ${rr != null ? rr.toFixed(1) : "—"}</span><div class="rrbar"><i style="width:${rrW.toFixed(0)}%;background:${rrCol}"></i></div></div>` +
+    `</div></div>`;
+};
+const cards = (rows, breakWord, kind) => rows.length
+  ? `<div class="cards">${rows.map((r) => patCard(r, breakWord, kind)).join("")}</div>`
+  : '<p class="muted">該当なし</p>';
+
+const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>トレンド</th><th>終値</th></tr>` +
+  `${tableRows(rows) || '<tr><td colspan=6 class="muted">該当なし</td></tr>'}</table>`;
+
+const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>罫線シグナル ${today}</title>
+<style>
+:root{--bg:#0b101c;--panel:#131a2b;--line:#243049;--ink:#e8edf5;--mut:#8090a8}
+*{box-sizing:border-box}body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:24px;max-width:1180px;margin:0 auto}
+.mono{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+h1{font-size:22px;margin:0 0 2px}h2{font-size:16px;margin:30px 0 6px;padding-left:10px;border-left:4px solid var(--line)}
+h2.buy{border-color:${UP}}h2.sell{border-color:${DOWN}}
+.muted{color:var(--mut);font-size:12px}.sub{color:var(--mut);font-size:12px;margin:0 0 4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 4px}
+.chip{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--mut)}
+.new{margin-right:3px}.wk{color:${AMBER};font-size:11px;border:1px solid ${AMBER};border-radius:3px;padding:0 4px;margin-left:4px}
+/* サマリー */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0 8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:10px;padding:12px 14px}
+.slabel{font-size:12px;color:var(--mut)}.snum{font-size:30px;font-weight:700;line-height:1.1;color:var(--c)}
+.snew{font-size:12px;margin-top:2px}
+/* テーブル */
+table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}
+th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left}th{color:var(--mut);font-weight:600;font-size:12px}
+tr:hover td{background:rgba(255,255,255,.02)}
+.scell{width:170px}.swrap{display:flex;align-items:center;gap:8px}.sval{width:42px;text-align:right;font-variant-numeric:tabular-nums}
+.sbar{flex:1;height:7px;background:#1c2536;border-radius:4px;overflow:hidden}.sbar i{display:block;height:100%}
+/* カード */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.card svg{width:100%;height:auto;display:block;border:0;border-bottom:1px solid var(--line);border-radius:0}
+.cbody{padding:10px 12px 12px}.ctitle{font-size:14px;margin-bottom:6px}.ctitle b{font-size:15px}
+.crow{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.badge{font-size:11px;font-weight:700;border-radius:5px;padding:2px 8px}.badge.out{background:transparent;border:1px solid}
+.prof{font-size:11px;color:var(--mut)}
+.cstats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+.cstats div{background:#0e1422;border-radius:6px;padding:5px 8px}.cstats span{display:block;font-size:10px;color:var(--mut)}.cstats b{font-size:14px}
+.rr{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mut)}.rr span{width:54px}
+.rrbar{flex:1;height:6px;background:#1c2536;border-radius:4px;overflow:hidden}.rrbar i{display:block;height:100%}
+@media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+<h1>罫線スクリーニング</h1>
+<p class="sub">${today}　／　対象 ${total} 銘柄　／　通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}</p>
+<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span></div>
+<div class="stats">
+${stat("🔴 買いサイン", buys.length, nNew(buys), UP)}
+${stat("🔵 売りサイン", sells.length, nNew(sells), DOWN)}
+${stat("⛰️ 三尊（天井）", tops.length, nNew(tops), DOWN)}
+${stat("🛡 逆三尊（大底）", invs.length, nNew(invs), UP)}
+</div>
+<h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
+<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。</p>
+${cards(tops, "割れ", "top")}
+<h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）</h2>
+<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
+${cards(invs, "抜け", "inverse")}
+<h2 class="buy">🔴 買いサイン（${buys.length}）</h2>
+${buyTable(buys)}
+<h2 class="sell">🔵 売りサイン（${sells.length}）</h2>
+${buyTable(sells)}
 </html>`;
 const outDir = new URL("./signals/", ROOT);
 fs.mkdirSync(outDir, { recursive: true });
