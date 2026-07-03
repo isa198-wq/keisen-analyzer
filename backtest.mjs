@@ -4,7 +4,7 @@
 //   三尊（天井=下落狙い）は値下がり＝勝ち、逆三尊（大底=上昇狙い）は値上がり＝勝ち。
 //   使い方:  node backtest.mjs
 import fs from "node:fs";
-import { buildSeries, tfSeries, detectPattern } from "./src/analysis.generated.mjs";
+import { analyze, buildSeries, tfSeries, detectPattern } from "./src/analysis.generated.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 const DATA = new URL("./screening_data.csv", ROOT);
@@ -29,9 +29,11 @@ const HORIZONS = [5, 10, 20];     // 何営業日後のリターンを見るか
 const MINBARS = 60;               // 検出を始めるまでの最低本数（パターン形成に必要）
 const MAXH = Math.max(...HORIZONS);
 
-// kind 別の結果バケツ
+// kind 別の結果バケツ（週足一致の有無で分ける＝「複合条件」運用の検証用）
 const mk = () => ({ n: 0, rets: Object.fromEntries(HORIZONS.map((h) => [h, []])) });
 const res = { top: mk(), inverse: mk() };
+const resWk = { top: mk(), inverse: mk() };     // 週足◎あり（複合条件）
+const resNoWk = { top: mk(), inverse: mk() };   // 週足◎なし（単独パターンのみ）
 const baseRets = Object.fromEntries(HORIZONS.map((h) => [h, []])); // 無条件（ベースライン）
 
 let signalsTotal = 0;
@@ -39,6 +41,7 @@ for (const [, bars] of groups) {
   const full = buildSeries(tfSeries(bars, "D"));
   const L = full.length;
   if (L < MINBARS + MAXH + 5) continue;
+  const rawOffset = bars.length - L; // full[t] が raw bars 上のどのインデックスかを求めるオフセット
 
   // ベースライン：各日の無条件フォワードリターン（間引いて収集）
   for (let t = MINBARS; t + MAXH < L; t += 3) {
@@ -56,6 +59,19 @@ for (const [, bars] of groups) {
     bucket.n++;
     signalsTotal++;
     for (const h of HORIZONS) bucket.rets[h].push(full[t + h].close / full[t].close - 1);
+
+    // 同じ日の週足を「その日までの生データだけ」で再現し、同種パターンが出ているか判定
+    const rawIdx = rawOffset + t;
+    const rawUpToHere = bars.slice(0, rawIdx + 1);
+    let weekly = false;
+    if (rawUpToHere.length >= 200) {
+      const wp = analyze(buildSeries(tfSeries(rawUpToHere, "W")), "週").pattern;
+      weekly = !!(wp && wp.kind === p.kind);
+    }
+    const seg = weekly ? resWk : resNoWk;
+    const segBucket = p.kind === "top" ? seg.top : seg.inverse;
+    segBucket.n++;
+    for (const h of HORIZONS) segBucket.rets[h].push(full[t + h].close / full[t].close - 1);
   }
 }
 
@@ -92,3 +108,24 @@ report("逆三尊（大底・上昇狙い）", res.inverse, "inverse");
 console.log(`参考）無条件ベースライン平均リターン: ` +
   HORIZONS.map((h) => `${h}日 ${pct(avg(baseRets[h]))}`).join(" / "));
 console.log(`\n注: 「ベース比」は同期間の全銘柄平均との差。三尊なら平均がベースより低い(マイナス方向)ほど、逆三尊なら高いほど、シグナルに優位性あり。`);
+
+// --- 複合条件（パターン×週足一致）の検証：週足◎ありとなしで的中率がどう変わるか ---
+console.log(`\n\n=== 複合条件の検証（週足◎の有無で分割） ===`);
+console.log(`「週足◎」＝同じ日の週足チャートでも同種のパターンが出ている状態。運用を複合条件に倒す根拠になるか確認する。\n`);
+const reportPair = (label, kind) => {
+  const wk = resWk[kind], noWk = resNoWk[kind];
+  console.log(`■ ${label}　週足◎あり ${wk.n}件 ／ 週足◎なし ${noWk.n}件`);
+  for (const h of HORIZONS) {
+    const base = avg(baseRets[h]);
+    const line = (b) => {
+      const r = b.rets[h];
+      const edge = avg(r) - base;
+      return `平均${pct(avg(r)).padStart(8)} 勝率${pct(winRate(r, kind)).padStart(7)} ベース比${(edge >= 0 ? "+" : "") + pct(edge)}`;
+    };
+    console.log(`  ${String(h).padStart(2)}日後: 週足◎あり[ ${wk.n ? line(wk) : "シグナルなし"} ] ｜ 週足◎なし[ ${noWk.n ? line(noWk) : "シグナルなし"} ]`);
+  }
+  console.log("");
+};
+reportPair("三尊", "top");
+reportPair("逆三尊", "inverse");
+console.log(`注: サンプル数が少ないため参考値。週足◎ありの勝率/ベース比が明確に高ければ、複合条件（パターン＋週足一致）を優先する運用の裏付けになる。`);

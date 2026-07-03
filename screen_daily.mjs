@@ -200,10 +200,20 @@ markPat(tops, pTops);
 markPat(invs, pInvs);
 // 新規を上に出す（パターンは新規→完成→形成中→quality順）
 const newFirst = (base) => (a, b) => (a.isNew !== b.isNew ? (a.isNew ? -1 : 1) : base(a, b));
-buys.sort(newFirst((a, b) => b.score - a.score));
-sells.sort(newFirst((a, b) => a.score - b.score));
 tops.sort(newFirst(byStatus));
 invs.sort(newFirst(byStatus));
+
+// 「パターンとの方向一致」マーク：買いは逆三尊(上昇)、売りは三尊(下落)が同じ銘柄に出ていれば整合。
+// あくまで参考情報。直近10営業日の答え合わせでは強い買い/強い売り単独はほぼ無エッジだったため、
+// このマークが付いた銘柄を並び順でも優先する（週足◎は複合条件の根拠として未検証のため対象外）。
+const invCodes = new Set(invs.map((r) => r.code));
+const topCodes = new Set(tops.map((r) => r.code));
+for (const r of buys) r.patternAligned = invCodes.has(r.code);
+for (const r of sells) r.patternAligned = topCodes.has(r.code);
+// 並び順：🆕新規 → ◆一致 → スコア順
+const alignFirst = (base) => (a, b) => (a.isNew !== b.isNew ? (a.isNew ? -1 : 1) : a.patternAligned !== b.patternAligned ? (a.patternAligned ? -1 : 1) : base(a, b));
+buys.sort(alignFirst((a, b) => b.score - a.score));
+sells.sort(alignFirst((a, b) => a.score - b.score));
 
 const snapshot = {
   date: today,
@@ -271,8 +281,10 @@ const rsiHeat = (v) => {
   else if (v <= 40) { bg = "rgba(63,143,214,.16)"; fg = "#9ec2e2"; }
   return `<span class="rsi" style="background:${bg};color:${fg}">${v.toFixed(0)}${tag ? `<i>${tag}</i>` : ""}</span>`;
 };
+// パターン一致マーク：買い×逆三尊、売り×三尊が同じ銘柄に出ている＝方向が重なる参考情報。
+const ALIGN = (r) => (r.patternAligned ? '<span class="align" title="同じ銘柄に方向が一致するパターンあり">◆一致</span>' : "");
 const tableRows = (rows) => rows.map((r) =>
-  `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
+  `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name} ${ALIGN(r)}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
   `<td>${rsiHeat(r.rsi)}</td><td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
@@ -340,6 +352,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .spk{width:72px}.spark{display:block}
 .rsi{display:inline-block;min-width:26px;text-align:center;padding:1px 6px;border-radius:5px;font-variant-numeric:tabular-nums;font-size:12px}
 .rsi i{font-style:normal;font-size:9px;margin-left:3px;opacity:.85}
+.align{font-size:10px;color:${AMBER};border:1px solid ${AMBER};border-radius:3px;padding:0 4px;margin-left:2px}
+.caveat{background:rgba(200,162,74,.08);border:1px solid var(--line);border-left:3px solid ${AMBER};border-radius:6px;padding:8px 12px;font-size:12px;color:var(--mut);margin:10px 0}
 /* 地合いバー */
 .breadth{margin:6px 0 4px}
 .bbar{display:flex;height:14px;border-radius:7px;overflow:hidden;border:1px solid var(--line)}.bbar span{display:block;height:100%}
@@ -387,6 +401,7 @@ ${cards(tops, "割れ", "top")}
 <h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
 ${cards(invs, "抜け", "inverse")}
+<div class="caveat">⚠ 直近10営業日の答え合わせでは、強い買い/強い売り単独のシグナルは市場平均と比べてほぼ優位性がありませんでした（買い対市場+0.02%・売り対市場-0.17%）。上の三尊・逆三尊カードを優先し、下の表は<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）が付いた銘柄を中心に参考にしてください。</div>
 <h2 class="buy">🔴 買いサイン（${buys.length}）</h2>
 ${buyTable(buys)}
 <h2 class="sell">🔵 売りサイン（${sells.length}）</h2>
@@ -444,7 +459,7 @@ async function notify() {
   }
   // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド RSI / 終値）
   const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
-  const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "");
+  const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "") + (r.patternAligned ? "◆" : "");
   const reportLines = (rows) => {
     const cap = 25;  // LINE本文(4900字)に買い・売り両方を収めるため各25件まで（全件はHTMLレポート参照）
     const lines = rows.slice(0, cap).map((r) =>
@@ -488,6 +503,7 @@ async function notify() {
     `🛡 逆三尊・大底（${invs.length}）`,
     patLines(invs, "抜け", "▲"),
     "",
+    `⚠ 買い/売り単独は直近10日の答え合わせで市場平均並み（優位性ほぼ無し）。◆＝方向一致パターンあり`,
     `🔴 買いサイン（${buys.length}）`,
     reportLines(buys),
     "",
@@ -511,7 +527,7 @@ async function notify() {
       const clip = (s, n) => (s.length > n ? s.slice(0, n) + " …(省略)" : s);
       const isSlack = /hooks\.slack\.com/.test(url);
       const isDiscord = /discord(app)?\.com/.test(url);
-      const brief = (rows) => rows.map((r) => ({ code: r.code, name: r.name, score: +r.score.toFixed(1), close: r.close, is_new: !!r.isNew }));
+      const brief = (rows) => rows.map((r) => ({ code: r.code, name: r.name, score: +r.score.toFixed(1), close: r.close, is_new: !!r.isNew, pattern_aligned: !!r.patternAligned }));
       let payload, label;
       if (isSlack) { payload = { text: clip(msg, 2900) }; label = "Slack"; }
       else if (isDiscord) { payload = { content: clip(msg, 1900) }; label = "Discord"; }
