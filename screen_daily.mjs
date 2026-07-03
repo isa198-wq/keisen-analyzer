@@ -4,6 +4,7 @@
 //   使い方:  node screen_daily.mjs        （通常は「毎日スクリーニング.bat」から実行）
 import fs from "node:fs";
 import { analyze, buildSeries, tfSeries } from "./src/analysis.generated.mjs";
+import { upsertEntry, loadHistory, seedHistory, evaluate } from "./evaluate.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 // ローカルで Webhook URL を入れるなら notify_config.local.json（gitignore済み）を使う。
@@ -29,6 +30,22 @@ for (const line of text.split(/\r?\n/).slice(1)) {
   groups.get(sym).push({
     date: c[1], open: +c[2], high: +c[3], low: +c[4], close: +c[5], volume: +c[6],
   });
+}
+
+// --- データ健全性チェック：前日比1.4倍超のジャンプ＝分割未調整・データ混入の疑い ---
+// （2026-06 に auto_adjust=False で分割銘柄の価格が飛び、三尊検出が壊れた事故の再発防止）
+const dataWarnings = [];
+for (const [sym, bars] of groups) {
+  for (let i = 1; i < bars.length; i++) {
+    const r = bars[i].close / bars[i - 1].close;
+    if (r > 1.4 || r < 1 / 1.4) {
+      dataWarnings.push(`${sym} ${bars[i].date} 前日比×${r.toFixed(2)}`);
+      break; // 1銘柄1警告で十分
+    }
+  }
+}
+if (dataWarnings.length) {
+  console.warn(`⚠ データ異常の疑い ${dataWarnings.length}件: ${dataWarnings.slice(0, 5).join(" / ")}${dataWarnings.length > 5 ? " …" : ""}`);
 }
 
 // --- #5 ミニ・ローソク足チャート（出来高バー＋利確/損切りゾーン＋ネックライン＋価格ラベル） ---
@@ -227,6 +244,29 @@ fs.writeFileSync(new URL(`./state_${today}.json`, stateDir), JSON.stringify(snap
 const nNew = (rows) => rows.filter((r) => r.isNew).length;
 console.log(`判定完了: ${total}銘柄中  買い系 ${buys.length}(新${nNew(buys)}) / 売り系 ${sells.length}(新${nNew(sells)})  三尊 ${tops.length}(新${nNew(tops)}) / 逆三尊 ${invs.length}(新${nNew(invs)})`);
 
+// --- 自動答え合わせ：本日のシグナルを履歴に記録し、過去シグナルの成績を集計 ---
+// 履歴はコードのみ保存し、成績は毎回最新CSV（分割調整済み）から日付で引くので分割にも安全。
+const dataDate = [...groups.values()][0].at(-1).date;   // データの最終営業日（=シグナルの基準日）
+if (loadHistory().length < 30) {
+  // 初回やCIキャッシュ消失時は過去60営業日ぶんを自動補完（その日までのデータだけで再現＝未来は見ない）
+  const added = seedHistory(groups, 60);
+  if (added) console.log(`検証履歴が薄いため過去 ${added} 営業日分を自動補完しました。`);
+}
+upsertEntry({
+  date: dataDate,
+  buys: buys.map((r) => r.code),
+  sells: sells.map((r) => r.code),
+  topsNew: tops.filter((r) => r.brokeBarsAgo === 0).map((r) => r.code),
+  invsNew: invs.filter((r) => r.brokeBarsAgo === 0).map((r) => r.code),
+});
+const evalHistory = loadHistory();
+const evalStats = evaluate(groups, evalHistory);
+const evalDays = evalHistory.length;
+{
+  const w10 = (cat) => { const st = evalStats[cat][10]; return st.n ? `${(st.win / st.n * 100).toFixed(0)}%(n=${st.n})` : "-"; };
+  console.log(`答え合わせ(10日後勝率): 買い${w10("buys")} 売り${w10("sells")} 三尊${w10("topsNew")} 逆三尊${w10("invsNew")} ／ 蓄積${evalDays}日`);
+}
+
 // --- HTMLレポート（ダッシュボード風） ---
 const UP = "#ef5a4d", DOWN = "#3f8fd6", GREEN = "#3fb27f", AMBER = "#c8a24a", RED = "#c4543f";
 const fmtPrice = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
@@ -327,6 +367,19 @@ const cards = (rows, breakWord, kind) => rows.length
 const buyTable = (rows) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>RSI</th><th>推移(24日)</th><th>終値</th></tr>` +
   `${tableRows(rows) || '<tr><td colspan=7 class="muted">該当なし</td></tr>'}</table>`;
 
+// 自動答え合わせの成績表（過去シグナルの5/10/20営業日後の成績。対市場プラス=市場平均より優位）
+const evalLabels = { buys: "🔴 買い（強い買い）", sells: "🔵 売り（強い売り）", topsNew: "⛰️ 三尊（当日完成）", invsNew: "🛡 逆三尊（当日完成）" };
+const evalCell = (st) => {
+  if (!st.n) return '<td class="muted">蓄積中</td>';
+  const win = st.win / st.n, avgR = st.sum / st.n, edge = st.baseN ? st.edgeSum / st.baseN : null;
+  const col = edge == null ? "var(--mut)" : edge > 0.002 ? GREEN : edge < -0.002 ? RED : AMBER;
+  return `<td><b style="color:${col}" class="mono">${(win * 100).toFixed(0)}%</b> <span class="muted mono">平均${(avgR * 100).toFixed(1)}%・対市場${edge != null ? (edge >= 0 ? "+" : "") + (edge * 100).toFixed(1) + "%" : "—"}・n=${st.n}</span></td>`;
+};
+const evalTable = `<table><tr><th>シグナル</th><th>5日後</th><th>10日後</th><th>20日後</th></tr>` +
+  Object.keys(evalLabels).map((c) =>
+    `<tr><td>${evalLabels[c]}</td>${[5, 10, 20].map((h) => evalCell(evalStats[c][h])).join("")}</tr>`
+  ).join("") + `</table>`;
+
 const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>罫線シグナル ${today}</title>
 <style>
 :root{--bg:#0b101c;--panel:#131a2b;--line:#243049;--ink:#e8edf5;--mut:#8090a8}
@@ -395,13 +448,17 @@ ${stat("⛰️ 三尊（天井）", tops.length, nNew(tops), DOWN)}
 ${stat("🛡 逆三尊（大底）", invs.length, nNew(invs), UP)}
 </div>
 ${breadthBar()}
+${dataWarnings.length ? `<div class="caveat" style="border-left-color:${RED}">🚨 データ異常の疑い ${dataWarnings.length}件（分割未調整・混入の可能性。シグナルが壊れているかも）: ${dataWarnings.slice(0, 5).join(" ／ ")}${dataWarnings.length > 5 ? " …" : ""}</div>` : ""}
+<h2>📈 自動答え合わせ（過去シグナルのその後・蓄積${evalDays}営業日）</h2>
+<p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。</p>
+${evalTable}
 <h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。</p>
 ${cards(tops, "割れ", "top")}
 <h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
 ${cards(invs, "抜け", "inverse")}
-<div class="caveat">⚠ 直近10営業日の答え合わせでは、強い買い/強い売り単独のシグナルは市場平均と比べてほぼ優位性がありませんでした（買い対市場+0.02%・売り対市場-0.17%）。上の三尊・逆三尊カードを優先し、下の表は<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）が付いた銘柄を中心に参考にしてください。</div>
+<div class="caveat">⚠ 買い/売り単独シグナルの実際の成績は上部「📈 自動答え合わせ」を参照（毎日自動更新）。<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）付きの銘柄を優先的に見てください。</div>
 <h2 class="buy">🔴 買いサイン（${buys.length}）</h2>
 ${buyTable(buys)}
 <h2 class="sell">🔵 売りサイン（${sells.length}）</h2>
@@ -490,11 +547,20 @@ async function notify() {
   const newBlock = newHi.length
     ? ["", `🆕 本日の新規（${newHi.length}）`, newHi.slice(0, 30).join("\n") + (newHi.length > 30 ? `\n…他${newHi.length - 30}件` : "")]
     : [];
+  // 自動答え合わせの1行サマリ（10日後成績。カッコ内は対市場の優位性）
+  const eLine = (cat) => {
+    const st = evalStats[cat][10];
+    if (!st.n) return "蓄積中";
+    const edge = st.baseN ? st.edgeSum / st.baseN : null;
+    return `${(st.win / st.n * 100).toFixed(0)}%${edge != null ? `(${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)}%)` : ""}`;
+  };
   // LINEは本文を4900字で切るため、注目度の高い順に並べる：
   // 新規ハイライト → 三尊/逆三尊（今回の主目的）→ 買い/売りリスト（件数が多く長い）。
   let msg = [
     `📊 罫線スクリーニング ${today}`,
     `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length}`,
+    `📈 答え合わせ10日後勝率: 買${eLine("buys")} 売${eLine("sells")} 三尊${eLine("topsNew")} 逆三尊${eLine("invsNew")}（蓄積${evalDays}日・カッコ内=対市場）`,
+    ...(dataWarnings.length ? [`🚨 データ異常疑い ${dataWarnings.length}件（レポート参照）`] : []),
     ...newBlock,
     "",
     `⛰️ 三尊・天井（${tops.length}）`,
@@ -503,7 +569,7 @@ async function notify() {
     `🛡 逆三尊・大底（${invs.length}）`,
     patLines(invs, "抜け", "▲"),
     "",
-    `⚠ 買い/売り単独は直近10日の答え合わせで市場平均並み（優位性ほぼ無し）。◆＝方向一致パターンあり`,
+    `◆＝方向一致パターンあり（成績詳細はレポートの📈自動答え合わせ）`,
     `🔴 買いサイン（${buys.length}）`,
     reportLines(buys),
     "",
