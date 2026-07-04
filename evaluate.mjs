@@ -54,7 +54,7 @@ export function seedHistory(groups, nDays) {
     if (idx < 80) continue;                                     // analyze に必要な最低本数
     const date = anyBars[idx].date;
     if (existing.has(date)) continue;
-    const e = { date, buys: [], sells: [], topsNew: [], invsNew: [], seed: true };
+    const e = { date, buys: [], sells: [], topsNew: [], invsNew: [], tops: [], invs: [], seed: true };
     for (const [sym, bars] of groups) {
       if (bars.length !== L) continue;                          // 日付ズレのある銘柄は安全のためスキップ
       const ci = sym.indexOf(":");
@@ -64,14 +64,40 @@ export function seedHistory(groups, nDays) {
       if (a.vIdx === 4) e.buys.push(code);                      // strong 運用と同じ条件
       else if (a.vIdx === 0) e.sells.push(code);
       const p = a.pattern;
-      if (p && (p.kind === "top" || p.kind === "inverse") && p.broke && p.breakI === series.length - 1) {
-        (p.kind === "top" ? e.topsNew : e.invsNew).push(code);  // 「ちょうどこの日に完成」だけを記録
+      if (p && (p.kind === "top" || p.kind === "inverse")) {
+        if (p.broke && p.breakI === series.length - 1) {
+          (p.kind === "top" ? e.topsNew : e.invsNew).push(code); // 「ちょうどこの日に完成」だけを記録
+        }
+        // 全状態も記録（🆕判定用。s: "f"=forming / "c"=confirmed。10日以内の絞り込みはシードでは不要）
+        (p.kind === "top" ? e.tops : e.invs).push({ c: code, s: p.status === "confirmed" ? "c" : "f" });
       }
     }
     entries.push(e);
   }
   if (entries.length) saveHistory(loadHistory().concat(entries));
   return entries.length;
+}
+
+// 連続日数の算出（history は日付昇順前提）。最新エントリの銘柄集合から1日ずつ遡り、
+// 「前日にも居たら days++ と start 更新、居なければ確定」。Map<code, {days, start}> を返す。
+export function streaks(history, key) {
+  const out = new Map();
+  if (!history.length) return out;
+  const last = history.at(-1);
+  for (const code of last[key] || []) out.set(code, { days: 1, start: last.date });
+  let active = new Set(out.keys());
+  for (let i = history.length - 2; i >= 0 && active.size; i--) {
+    const set = new Set(history[i][key] || []);
+    for (const code of [...active]) {
+      if (set.has(code)) {
+        const s = out.get(code);
+        s.days++; s.start = history[i].date;
+      } else {
+        active.delete(code);
+      }
+    }
+  }
+  return out;
 }
 
 // --- 共有部品（evaluate 系の索引・集計。価格は常に最新CSVから日付で引く） ---
