@@ -623,12 +623,12 @@ ${removedBlock}
 ${evalTable}
 ${regimeLine}
 <h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）${trustChip("topsNew")}</h2>
-<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。</p>
+<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。<br>5年・1,229件の検証で完成イベント単独のエッジは未確認（このカードは形状の参考情報）。</p>
 ${cards(tops, "割れ", "top")}
 <h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）${trustChip("invsNew")}</h2>
-<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
+<p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。<br>5年・1,229件の検証で完成イベント単独のエッジは未確認（このカードは形状の参考情報）。</p>
 ${cards(invs, "抜け", "inverse")}
-<div class="caveat">⚠ 買い/売り単独シグナルの実際の成績は上部「📈 自動答え合わせ」を参照（毎日自動更新）。<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）付きの銘柄を優先的に見てください。</div>
+<div class="caveat">⚠ 買い/売り単独シグナルの実際の成績は市場平均並み（5年検証: 買い10日後対市場+0.03%・売り+0.09%、詳細は上部「📈 自動答え合わせ」）。<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）付きの銘柄を優先的に見てください。</div>
 ${staleBlock}
 <h2 class="buy">🔴 買いサイン（${buys.length}）${trustChip("buys")}</h2>
 ${buyTable(buys, +1)}
