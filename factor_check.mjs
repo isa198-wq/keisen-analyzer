@@ -3,8 +3,9 @@
 //   どのファクターが当たっていて、どれがノイズ/逆指標かを「測る道具」。
 //   このスクリプトは重みを変更しない（変更はデータが半年貯まってから別途判断）。
 //
-//   使い方:  node factor_check.mjs [--days N]   （既定 N=120 営業日）
-//   出力:    テーブル表示 ＋ signals/factor_stats.json（プルーン正規表現に一致しない名前）
+//   使い方:  node factor_check.mjs [--days N] [--out NAME]   （既定 N=120 / NAME=factor_stats.json）
+//   出力:    テーブル表示 ＋ signals/<NAME>（プルーン正規表現に一致しない名前にすること）
+//   全期間検証は:  node factor_check.mjs --days 1100 --out factor_stats_full.json
 import fs from "node:fs";
 import { analyze, buildSeries, tfSeries } from "./src/analysis.generated.mjs";
 import { classifyRegimes, buildByCode } from "./evaluate.mjs";
@@ -29,6 +30,8 @@ for (const line of fs.readFileSync(DATA, "utf8").split(/\r?\n/).slice(1)) {
 
 const di = process.argv.indexOf("--days");
 const DAYS = di >= 0 ? +process.argv[di + 1] || 120 : 120;
+const oi = process.argv.indexOf("--out");
+const OUT_NAME = oi >= 0 && process.argv[oi + 1] ? process.argv[oi + 1] : "factor_stats.json";
 const HORIZONS = [5, 10, 20];
 const REGIMES = ["up", "down", "range"];
 const REGIME_JA = { up: "上昇", down: "下落", range: "もみ合い" };
@@ -154,5 +157,5 @@ const out = {
     }))])),
   }])),
 };
-fs.writeFileSync(new URL("./factor_stats.json", outDir), JSON.stringify(out, null, 1));
-console.log(`\n保存: signals/factor_stats.json ／ 実行時間 ${((Date.now() - t0) / 1000).toFixed(0)}秒`);
+fs.writeFileSync(new URL(`./${OUT_NAME}`, outDir), JSON.stringify(out, null, 1));
+console.log(`\n保存: signals/${OUT_NAME} ／ 実行時間 ${((Date.now() - t0) / 1000).toFixed(0)}秒`);
