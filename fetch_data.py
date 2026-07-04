@@ -37,7 +37,7 @@ SYMBOLS = [
 ]
 
 LIST_FILE = "nikkei225.txt"   # あれば優先して使う銘柄リスト
-PERIOD = "2y"                  # 取得期間（"1y","2y","5y","max" など）
+PERIOD = "5y"                  # 取得期間（パターン完成イベントの統計を厚くするため5年。"1y","2y","max" なども可）
 CHUNK = 40                     # 一度にまとめて取得する銘柄数
 OUT_FILE = "screening_data.csv"
 

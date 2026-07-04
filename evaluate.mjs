@@ -46,14 +46,15 @@ export function upsertEntry(entry) {
 // 既に記録がある日付はスキップ。戻り値は補完した日数。
 // marketGroups を渡すと過去分の市況コンテキスト(ctx)もバックフィルする。
 export function seedHistory(groups, nDays, marketGroups = null) {
-  const anyBars = groups.values().next().value;
-  const L = anyBars.length;
+  // 日付グリッドは「最頻の本数」基準（上場が浅い銘柄などの本数バラつきに耐える）
+  const dates = buildDateGrid(groups);
+  const L = dates.length;
   const existing = new Set(loadHistory().map((e) => e.date));
   const entries = [];
   for (let k = nDays; k >= 1; k--) {
     const idx = L - 1 - k;
     if (idx < 80) continue;                                     // analyze に必要な最低本数
-    const date = anyBars[idx].date;
+    const date = dates[idx];
     if (existing.has(date)) continue;
     const e = { date, buys: [], sells: [], topsNew: [], invsNew: [], tops: [], invs: [], seed: true };
     const ctx = buildCtx(marketGroups, date);
