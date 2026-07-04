@@ -35,6 +35,10 @@ jobs:
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
 
+      # テスト失敗＝ジョブ失敗＝通知が飛ばない（壊れたシグナルを配らない）。これは意図した挙動。
+      - name: テスト（判定ロジックの健全性）
+        run: node run_tests.mjs
+
       # 前回実行の signals/（state_*.json）を引き継ぎ、「本日の新規」差分を効かせる。
       # key は毎回ユニーク（run_id）にして必ず保存し、restore-keys で直近のキャッシュを復元する
       # ローリング方式。これが無いとクラウドでは毎回まっさらで全件が新規扱いになる。
