@@ -4,7 +4,7 @@
 //   使い方:  node screen_daily.mjs        （通常は「毎日スクリーニング.bat」から実行）
 import fs from "node:fs";
 import { analyze, buildSeries, tfSeries } from "./src/analysis.generated.mjs";
-import { upsertEntry, loadHistory, seedHistory, evaluate } from "./evaluate.mjs";
+import { upsertEntry, loadHistory, seedHistory, evaluate, classifyRegimes, evaluateByRegime, computeTrust, edgeOf } from "./evaluate.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 // ローカルで Webhook URL を入れるなら notify_config.local.json（gitignore済み）を使う。
@@ -13,6 +13,15 @@ const localCfg = new URL("./notify_config.local.json", ROOT);
 const cfgPath = fs.existsSync(localCfg) ? localCfg : new URL("./notify_config.json", ROOT);
 const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
 const DATA = new URL("./screening_data.csv", ROOT);
+
+// --- 適応型の答え合わせ（信頼度）の定数。規則本体は evaluate.mjs の computeTrust ---
+// 閾値は手決めの固定値（ダムに保つ）。60〜250日のサンプルで適応最適化すると必ず過学習するため。
+const TRUST_ENTER = -0.003;  // 対市場edge(10日)がこれを下回ると ⚠️警戒
+const TRUST_EXIT = +0.003;   // 直近窓・現レジームの両方がこれを上回ると ✅有効（間は前日維持=ヒステリシス）
+const TRUST_MIN_N = 100;     // 買い/売りの判定に必要な最低サンプル数（窓・レジーム各々）
+const TRUST_MIN_N_PAT = 8;   // 三尊/逆三尊の最低サンプル数
+const RECENT_WINDOW = 60;    // 「直近窓」の営業日数（答えが出たシグナル日ベース）
+const ADAPTIVE_MUTE = false; // 将来用の入り口のみ: ⚠️カテゴリの通知ミュート（情報を隠すと検証も止まるため未実装）
 
 // --- CSV 読み込み（縦持ち: コード:社名, 日付, 始値, 高値, 安値, 終値, 出来高） ---
 if (!fs.existsSync(DATA)) {
@@ -248,23 +257,42 @@ console.log(`判定完了: ${total}銘柄中  買い系 ${buys.length}(新${nNew
 // 履歴はコードのみ保存し、成績は毎回最新CSV（分割調整済み）から日付で引くので分割にも安全。
 const dataDate = [...groups.values()][0].at(-1).date;   // データの最終営業日（=シグナルの基準日）
 if (loadHistory().length < 30) {
-  // 初回やCIキャッシュ消失時は過去60営業日ぶんを自動補完（その日までのデータだけで再現＝未来は見ない）
-  const added = seedHistory(groups, 60);
+  // 初回やCIキャッシュ消失時は過去250営業日ぶんを自動補完（その日までのデータだけで再現＝未来は見ない）。
+  // 250日なのはレジーム別（上昇/下落/もみ合い）のサンプルを確保するため。数分かかるが初回のみ。
+  const added = seedHistory(groups, 250);
   if (added) console.log(`検証履歴が薄いため過去 ${added} 営業日分を自動補完しました。`);
 }
-upsertEntry({
+const todayEntry = {
   date: dataDate,
   buys: buys.map((r) => r.code),
   sells: sells.map((r) => r.code),
   topsNew: tops.filter((r) => r.brokeBarsAgo === 0).map((r) => r.code),
   invsNew: invs.filter((r) => r.brokeBarsAgo === 0).map((r) => r.code),
-});
+};
+upsertEntry(todayEntry);
 const evalHistory = loadHistory();
 const evalStats = evaluate(groups, evalHistory);
 const evalDays = evalHistory.length;
 {
   const w10 = (cat) => { const st = evalStats[cat][10]; return st.n ? `${(st.win / st.n * 100).toFixed(0)}%(n=${st.n})` : "-"; };
   console.log(`答え合わせ(10日後勝率): 買い${w10("buys")} 売り${w10("sells")} 三尊${w10("topsNew")} 逆三尊${w10("invsNew")} ／ 蓄積${evalDays}日`);
+}
+
+// --- 適応型の答え合わせ: 直近窓・レジーム別の成績と信頼度状態（表示と優先度のみ。シグナルは全件出す） ---
+const REGIME_JA = { up: "上昇", down: "下落", range: "もみ合い" };
+const regimes = classifyRegimes(groups);
+const currentRegime = regimes.get(dataDate) || (regimes.size ? [...regimes.values()].at(-1) : "range");
+const windowStats = evaluate(groups, evalHistory, { lastN: RECENT_WINDOW });
+const regimeStats = evaluateByRegime(groups, evalHistory, regimes);
+const regimeCur = Object.fromEntries(Object.keys(regimeStats).map((c) => [c, regimeStats[c][currentRegime]]));
+// 前日状態＝昨日のエントリの trust（今日は upsert 済みなので at(-2) が昨日。再実行しても日付上書きで冪等）
+const prevTrust = evalHistory.length >= 2 ? evalHistory.at(-2).trust || null : null;
+const trust = computeTrust(prevTrust, windowStats, regimeCur, { TRUST_ENTER, TRUST_EXIT, TRUST_MIN_N, TRUST_MIN_N_PAT });
+todayEntry.trust = trust;                               // 翌日のヒステリシス入力として今日のエントリに保存
+upsertEntry(todayEntry);
+{
+  const tj = { ok: "✅", warn: "⚠️", hold: "❔" };
+  console.log(`地合い: ${REGIME_JA[currentRegime]}レジーム ／ 信頼度: 買${tj[trust.buys]} 売${tj[trust.sells]} 三尊${tj[trust.topsNew]} 逆三尊${tj[trust.invsNew]}`);
 }
 
 // --- HTMLレポート（ダッシュボード風） ---
@@ -375,10 +403,39 @@ const evalCell = (st) => {
   const col = edge == null ? "var(--mut)" : edge > 0.002 ? GREEN : edge < -0.002 ? RED : AMBER;
   return `<td><b style="color:${col}" class="mono">${(win * 100).toFixed(0)}%</b> <span class="muted mono">平均${(avgR * 100).toFixed(1)}%・対市場${edge != null ? (edge >= 0 ? "+" : "") + (edge * 100).toFixed(1) + "%" : "—"}・n=${st.n}</span></td>`;
 };
-const evalTable = `<table><tr><th>シグナル</th><th>5日後</th><th>10日後</th><th>20日後</th></tr>` +
+// 直近窓と全期間の比較矢印: 直近の対市場edge(10日)が全期間より+0.5%pt以上良ければ↗、悪ければ↘
+const trendArrow = (c) => {
+  const allE = edgeOf(evalStats[c][10]), recE = edgeOf(windowStats[c][10]);
+  if (allE == null || recE == null) return "";
+  const d = recE - allE;
+  const [sym, col] = d >= 0.005 ? ["↗", GREEN] : d <= -0.005 ? ["↘", RED] : ["→", "var(--mut)"];
+  return ` <b style="color:${col}" title="全期間比${d >= 0 ? "+" : ""}${(d * 100).toFixed(1)}%pt">${sym}</b>`;
+};
+const evalTable = `<table><tr><th>シグナル</th><th>5日後</th><th>10日後</th><th>直近${RECENT_WINDOW}日窓(10日後)</th><th>20日後</th></tr>` +
   Object.keys(evalLabels).map((c) =>
-    `<tr><td>${evalLabels[c]}</td>${[5, 10, 20].map((h) => evalCell(evalStats[c][h])).join("")}</tr>`
+    `<tr><td>${evalLabels[c]}</td>${evalCell(evalStats[c][5])}${evalCell(evalStats[c][10])}` +
+    `${evalCell(windowStats[c][10]).replace("</td>", trendArrow(c) + "</td>")}${evalCell(evalStats[c][20])}</tr>`
   ).join("") + `</table>`;
+
+// 「いまのレジームでの過去成績」＝過去の答えを今の文脈で読み替える1行
+const regimeLine = (() => {
+  const cell = (cat, label) => {
+    const st = regimeCur[cat] && regimeCur[cat][10];
+    if (!st || !st.n) return `${label} —`;
+    const e = edgeOf(st);
+    return `${label} 勝率${(st.win / st.n * 100).toFixed(0)}%(対市場${e != null ? (e >= 0 ? "+" : "") + (e * 100).toFixed(1) + "%" : "—"}, n=${st.n})`;
+  };
+  return `<p class="regimeline">現在は<b>${REGIME_JA[currentRegime]}レジーム</b> ｜ ${REGIME_JA[currentRegime]}時の成績(10日後): ` +
+    `${cell("buys", "買い")} / ${cell("sells", "売り")} / ${cell("topsNew", "三尊")} / ${cell("invsNew", "逆三尊")}</p>`;
+})();
+
+// セクション見出しの信頼度チップ（⚠️は目立たせ、✅は控えめに。❔はサンプル不足の正直な表示）
+const trustChip = (cat) => {
+  const t = trust[cat];
+  if (t === "warn") return ` <span class="tchip warn">⚠️ 直近効いていません</span>`;
+  if (t === "ok") return ` <span class="tchip ok">✅ 有効</span>`;
+  return ` <span class="tchip hold">❔ 判定保留</span>`;
+};
 
 const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>罫線シグナル ${today}</title>
 <style>
@@ -407,7 +464,14 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rsi i{font-style:normal;font-size:9px;margin-left:3px;opacity:.85}
 .align{font-size:10px;color:${AMBER};border:1px solid ${AMBER};border-radius:3px;padding:0 4px;margin-left:2px}
 .caveat{background:rgba(200,162,74,.08);border:1px solid var(--line);border-left:3px solid ${AMBER};border-radius:6px;padding:8px 12px;font-size:12px;color:var(--mut);margin:10px 0}
-/* 地合いバー */
+/* 地合いバー・レジーム・信頼度チップ */
+.regimebar{font-size:13px;margin:8px 0 2px}.regimebar .muted{margin-left:8px}
+.regimeline{font-size:12px;color:var(--mut);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 12px;margin:8px 0 0}
+.regimeline b{color:var(--ink)}
+.tchip{font-size:11px;border-radius:5px;padding:1px 8px;font-weight:600;vertical-align:2px;margin-left:6px}
+.tchip.warn{background:rgba(196,84,63,.20);color:#f0a878;border:1px solid ${RED}}
+.tchip.ok{color:${GREEN};border:1px solid rgba(63,178,127,.45)}
+.tchip.hold{color:var(--mut);border:1px solid var(--line);font-weight:400}
 .breadth{margin:6px 0 4px}
 .bbar{display:flex;height:14px;border-radius:7px;overflow:hidden;border:1px solid var(--line)}.bbar span{display:block;height:100%}
 .blabels{display:flex;justify-content:space-between;font-size:11px;margin-top:4px}
@@ -448,20 +512,23 @@ ${stat("⛰️ 三尊（天井）", tops.length, nNew(tops), DOWN)}
 ${stat("🛡 逆三尊（大底）", invs.length, nNew(invs), UP)}
 </div>
 ${breadthBar()}
+<div class="regimebar">現在の地合い: <b style="color:${currentRegime === "up" ? GREEN : currentRegime === "down" ? RED : AMBER}">${currentRegime === "up" ? "📈" : currentRegime === "down" ? "📉" : "➡"} ${REGIME_JA[currentRegime]}レジーム</b><span class="muted">（全${total}銘柄の等ウェイト指数 vs 25日線で機械判定）</span></div>
 ${dataWarnings.length ? `<div class="caveat" style="border-left-color:${RED}">🚨 データ異常の疑い ${dataWarnings.length}件（分割未調整・混入の可能性。シグナルが壊れているかも）: ${dataWarnings.slice(0, 5).join(" ／ ")}${dataWarnings.length > 5 ? " …" : ""}</div>` : ""}
 <h2>📈 自動答え合わせ（過去シグナルのその後・蓄積${evalDays}営業日）</h2>
-<p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。</p>
+<p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。<br>
+「直近${RECENT_WINDOW}日窓」は答えが出たシグナル日の直近${RECENT_WINDOW}日分（10日後成績は最短でも10日前のシグナルまでしか反映されない構造的ラグあり）。矢印は全期間との比較: ↗改善 ／ →横ばい ／ ↘悪化。</p>
 ${evalTable}
-<h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）</h2>
+${regimeLine}
+<h2 class="sell">⛰️ 三尊（ヘッドアンドショルダー天井）（${tops.length}）${trustChip("topsNew")}</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを割ると「完成」＝下落シグナル。</p>
 ${cards(tops, "割れ", "top")}
-<h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）</h2>
+<h2 class="buy">🛡 逆三尊（インバースH&S・大底）（${invs.length}）${trustChip("invsNew")}</h2>
 <p class="muted">買い／売り判定に関わらず抽出。終値がネックラインを上抜けると「完成」＝上昇シグナル。</p>
 ${cards(invs, "抜け", "inverse")}
 <div class="caveat">⚠ 買い/売り単独シグナルの実際の成績は上部「📈 自動答え合わせ」を参照（毎日自動更新）。<span class="align" style="margin-left:0">◆一致</span>（方向が一致するパターンが同じ銘柄に出ている）付きの銘柄を優先的に見てください。</div>
-<h2 class="buy">🔴 買いサイン（${buys.length}）</h2>
+<h2 class="buy">🔴 買いサイン（${buys.length}）${trustChip("buys")}</h2>
 ${buyTable(buys)}
-<h2 class="sell">🔵 売りサイン（${sells.length}）</h2>
+<h2 class="sell">🔵 売りサイン（${sells.length}）${trustChip("sells")}</h2>
 ${buyTable(sells)}
 <div id="modal" class="modal" hidden><div class="mbox"><div class="mhead"><b id="mtitle"></b><button class="mclose" id="mclose" aria-label="閉じる">×</button></div><div id="mbody" class="mbody"></div></div></div>
 <script>
@@ -506,14 +573,6 @@ async function notify() {
   // クラウド(GitHub Actions)では Secret を環境変数で渡す。なければ設定ファイル。
   const lineToken = (process.env.LINE_TOKEN || cfg.line_token || "").trim();
   const url = (process.env.WEBHOOK_URL || cfg.webhook_url || "").trim();
-  if (!lineToken && !url) {
-    console.log("通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
-    return;
-  }
-  if (buys.length === 0 && sells.length === 0 && tops.length === 0 && invs.length === 0) {
-    console.log("サイン該当なし。通知はスキップしました。");
-    return;
-  }
   // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド RSI / 終値）
   const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
   const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "") + (r.patternAligned ? "◆" : "");
@@ -536,13 +595,15 @@ async function notify() {
     if (rows.length > cap) lines.push(`…他${rows.length - cap}件`);
     return lines.join("\n") || "なし";
   };
-  // 🆕 本日の新規だけを抜き出したハイライト（最優先で先頭に出す）
+  // 🆕 本日の新規だけを抜き出したハイライト（最優先で先頭に出す）。
+  // ⚠️警戒カテゴリの行には行頭に⚠を付ける（載せるのはやめない＝情報は隠さない）。
+  const warnMark = (cat) => (trust[cat] === "warn" ? "⚠" : "");
   const newLine = (r, kind) => `${kind}${r.code} ${r.name}`;
   const newHi = [
-    ...buys.filter((r) => r.isNew).map((r) => newLine(r, "🔴買 ")),
-    ...sells.filter((r) => r.isNew).map((r) => newLine(r, "🔵売 ")),
-    ...tops.filter((r) => r.isNew).map((r) => newLine(r, "⛰️三尊 ")),
-    ...invs.filter((r) => r.isNew).map((r) => newLine(r, "🛡逆三尊 ")),
+    ...buys.filter((r) => r.isNew).map((r) => newLine(r, warnMark("buys") + "🔴買 ")),
+    ...sells.filter((r) => r.isNew).map((r) => newLine(r, warnMark("sells") + "🔵売 ")),
+    ...tops.filter((r) => r.isNew).map((r) => newLine(r, warnMark("topsNew") + "⛰️三尊 ")),
+    ...invs.filter((r) => r.isNew).map((r) => newLine(r, warnMark("invsNew") + "🛡逆三尊 ")),
   ];
   const newBlock = newHi.length
     ? ["", `🆕 本日の新規（${newHi.length}）`, newHi.slice(0, 30).join("\n") + (newHi.length > 30 ? `\n…他${newHi.length - 30}件` : "")]
@@ -556,10 +617,12 @@ async function notify() {
   };
   // LINEは本文を4900字で切るため、注目度の高い順に並べる：
   // 新規ハイライト → 三尊/逆三尊（今回の主目的）→ 買い/売りリスト（件数が多く長い）。
+  const tMark = { ok: "✅", warn: "⚠️", hold: "❔" };
   let msg = [
     `📊 罫線スクリーニング ${today}`,
-    `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length}`,
+    `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length} ｜ 地合い ${REGIME_JA[currentRegime]}`,
     `📈 答え合わせ10日後勝率: 買${eLine("buys")} 売${eLine("sells")} 三尊${eLine("topsNew")} 逆三尊${eLine("invsNew")}（蓄積${evalDays}日・カッコ内=対市場）`,
+    `信頼度: 買${tMark[trust.buys]} 売${tMark[trust.sells]} 三尊${tMark[trust.topsNew]} 逆三尊${tMark[trust.invsNew]}（直近${RECENT_WINDOW}日と現レジームの成績で機械判定）`,
     ...(dataWarnings.length ? [`🚨 データ異常疑い ${dataWarnings.length}件（レポート参照）`] : []),
     ...newBlock,
     "",
@@ -576,6 +639,17 @@ async function notify() {
     `🔵 売りサイン（${sells.length}）`,
     reportLines(sells),
   ].join("\n");
+  // 本文長は送信の有無に関わらず常に確認できるようにする（4900字制限の監視）
+  console.log(`LINE想定本文: ${msg.length}字${msg.length > 4900 ? "（⚠4900字超のため末尾切り詰め）" : ""}`);
+
+  if (!lineToken && !url) {
+    console.log("通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
+    return;
+  }
+  if (buys.length === 0 && sells.length === 0 && tops.length === 0 && invs.length === 0) {
+    console.log("サイン該当なし。通知はスキップしました。");
+    return;
+  }
 
   try {
     if (lineToken) {
