@@ -208,6 +208,17 @@ const total = groups.size;
 const dataDate = [...groups.values()][0].at(-1).date;   // データの最終営業日（=シグナルの基準日）
 // 市況コンテキスト（VIX・BTC等）。public/market_data.csv が無ければ null＝市況表示・記録なしで正常動作
 const marketGroups = loadMarketGroups();
+// 決算接近の警告（フェーズ6）: earnings_dates.json があれば、決算日が基準日の±7暦日以内の銘柄に📅。
+// yfinance の決算データは品質が不安定なため「警告表示」のみで判定には使わない。ファイルが無ければ何も出さない。
+const earningsNear = new Map();   // code -> "YYYY-MM-DD"
+try {
+  // BOM除去: PowerShellやメモ帳で編集されるとBOM付きになり JSON.parse が落ちるため
+  const ej = JSON.parse(fs.readFileSync(new URL("./signals/earnings_dates.json", ROOT), "utf8").replace(/^﻿/, ""));
+  const base = new Date(dataDate);
+  for (const [code, d] of Object.entries(ej)) {
+    if (Math.abs((new Date(d) - base) / 86400000) <= 7) earningsNear.set(code, d);
+  }
+} catch { /* 未生成なら決算チップなし */ }
 if (loadHistory().length < 30) {
   // 初回やCIキャッシュ消失時は過去250営業日ぶんを自動補完（その日までのデータだけで再現＝未来は見ない）。
   // 250日なのはレジーム別（上昇/下落/もみ合い）のサンプルを確保するため。数分かかるが初回のみ。
@@ -412,6 +423,8 @@ const rsiHeat = (v) => {
 };
 // パターン一致マーク：買い×逆三尊、売り×三尊が同じ銘柄に出ている＝方向が重なる参考情報。
 const ALIGN = (r) => (r.patternAligned ? '<span class="align" title="同じ銘柄に方向が一致するパターンあり">◆一致</span>' : "");
+// 決算接近チップ（±7暦日以内。材料起因の逆行＝テクニカル圏外の識別用）
+const EARN = (r) => (earningsNear.has(r.code) ? `<span class="earn" title="決算日 ${earningsNear.get(r.code)}（±7日以内）">📅決算近</span>` : "");
 // 継続列: シグナルが何日連続か＋初日からの騰落率（買いは+緑/-赤、売りは逆）。逆行張り付きは⚠付き
 const streakCell = (r, dir) => {
   const ret = r.sinceRet;
@@ -421,7 +434,7 @@ const streakCell = (r, dir) => {
   return `<td class="mono" style="white-space:nowrap">${warn}${r.days}日目${retTxt}</td>`;
 };
 const tableRows = (rows, dir) => rows.map((r) =>
-  `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name} ${ALIGN(r)}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
+  `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name} ${ALIGN(r)}${EARN(r)}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
   `<td>${rsiHeat(r.rsi)}</td>${streakCell(r, dir)}<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
@@ -448,7 +461,7 @@ const patCard = (r, breakWord, kind) => {
   return `<div class="card" style="border-top:3px solid ${accent}" data-code="${r.code}" data-name="${r.name}">` +
     `<div class="chartwrap" title="クリックで拡大（日足・週足・月足）">${r.svg}<span class="zhint">⤢ 拡大</span></div>` +
     `<div class="zoom" hidden>${r.wSvg}${r.mSvg}</div><div class="cbody">` +
-    `<div class="ctitle">${NEW(r)}<b>${r.code}</b> ${r.name} ${WK(r)}</div>` +
+    `<div class="ctitle">${NEW(r)}<b>${r.code}</b> ${r.name} ${WK(r)}${EARN(r)}</div>` +
     `<div class="crow">${badge}<span class="prof">出来高 ${profileLabel(r.profile)}</span></div>` +
     `<div class="cstats"><div><span>目標</span><b style="color:${GREEN}" class="mono">${fmtPrice(r.target)}</b></div>` +
     `<div><span>損切</span><b style="color:${RED}" class="mono">${fmtPrice(r.stop)}</b></div>` +
@@ -543,6 +556,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rsi{display:inline-block;min-width:26px;text-align:center;padding:1px 6px;border-radius:5px;font-variant-numeric:tabular-nums;font-size:12px}
 .rsi i{font-style:normal;font-size:9px;margin-left:3px;opacity:.85}
 .align{font-size:10px;color:${AMBER};border:1px solid ${AMBER};border-radius:3px;padding:0 4px;margin-left:2px}
+.earn{font-size:10px;color:#e09a3f;border:1px solid #e09a3f;border-radius:3px;padding:0 4px;margin-left:3px}
 .caveat{background:rgba(200,162,74,.08);border:1px solid var(--line);border-left:3px solid ${AMBER};border-radius:6px;padding:8px 12px;font-size:12px;color:var(--mut);margin:10px 0}
 /* 🌍 市況ストリップ */
 .mstrip{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 0}
@@ -665,8 +679,8 @@ async function notify() {
   const url = (process.env.WEBHOOK_URL || cfg.webhook_url || "").trim();
   // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド RSI / 終値）
   const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
-  // (Nd) = シグナルが N 営業日連続。1日目は🆕が既にあるので付けない
-  const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "") + (r.patternAligned ? "◆" : "") + (r.days > 1 ? `(${r.days}d)` : "");
+  // (Nd) = シグナルが N 営業日連続。1日目は🆕が既にあるので付けない。📅 = 決算±7日以内
+  const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "") + (r.patternAligned ? "◆" : "") + (earningsNear.has(r.code) ? "📅" : "") + (r.days > 1 ? `(${r.days}d)` : "");
   const reportLines = (rows) => {
     const cap = 20;  // LINE本文(4900字)に買い・売り両方を収めるため各20件まで（全件はHTMLレポート参照。フェーズ1の行追加に伴い25→20）
     const lines = rows.slice(0, cap).map((r) =>

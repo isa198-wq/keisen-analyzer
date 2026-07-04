@@ -14,6 +14,17 @@ jobs:
       - name: チェックアウト
         uses: actions/checkout@v4
 
+      # 前回実行の signals/（history.jsonl / earnings_dates.json）を引き継ぐローリングキャッシュ。
+      # fetch_earnings.py が前回までの決算日キャッシュを読めるよう、チェックアウト直後に復元する。
+      # key は毎回ユニーク（run_id）にして必ず保存し、restore-keys で直近のキャッシュを復元する。
+      - name: 前回の状態を復元（差分通知・決算日キャッシュ）
+        uses: actions/cache@v4
+        with:
+          path: signals
+          key: signals-state-${{ github.run_id }}
+          restore-keys: |
+            signals-state-
+
       - name: Python セットアップ
         uses: actions/setup-python@v5
         with:
@@ -24,13 +35,18 @@ jobs:
         with:
           node-version: "20"
 
-      - name: 依存インストール（yfinance）
-        run: python -m pip install --quiet yfinance
+      - name: 依存インストール（yfinance / lxml=決算日スクレイプ用）
+        run: python -m pip install --quiet yfinance lxml
 
       - name: データ取得（指標＋日経225）
         run: |
           python fetch_market.py
           python fetch_data.py
+
+      # 決算日の更新（1回40銘柄ずつ。失敗しても致命的でないため continue-on-error）
+      - name: 決算日の更新（決算接近の警告用）
+        continue-on-error: true
+        run: python fetch_earnings.py
 
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
@@ -38,17 +54,6 @@ jobs:
       # テスト失敗＝ジョブ失敗＝通知が飛ばない（壊れたシグナルを配らない）。これは意図した挙動。
       - name: テスト（判定ロジックの健全性）
         run: node run_tests.mjs
-
-      # 前回実行の signals/（state_*.json）を引き継ぎ、「本日の新規」差分を効かせる。
-      # key は毎回ユニーク（run_id）にして必ず保存し、restore-keys で直近のキャッシュを復元する
-      # ローリング方式。これが無いとクラウドでは毎回まっさらで全件が新規扱いになる。
-      - name: 前回の状態を復元（差分通知用キャッシュ）
-        uses: actions/cache@v4
-        with:
-          path: signals
-          key: signals-state-${{ github.run_id }}
-          restore-keys: |
-            signals-state-
 
       - name: スクリーニング＋通知
         env:
