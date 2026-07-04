@@ -26,9 +26,11 @@ INDICES = [
     ("^GSPC", "S&P500"),
     ("^N225", "日経225"),
     ("JPY=X", "ドル円"),
+    ("^VIX", "VIX恐怖指数"),    # リスクセンチメント（水準に意味: <20平穏 / 20-30警戒 / 30+恐怖）
+    ("BTC-USD", "ビットコイン"),  # リスク選好の代理指標（BTC-JPYよりデータが安定するUSD建て）
 ]
 
-PERIOD = "6mo"          # 取得期間（スパークライン用）
+PERIOD = "2y"           # 取得期間（history.jsonl への ctx バックフィル用に2年。7指標×約500行なので軽い）
 OUT_DIR = "public"      # アプリが /market_data.csv で読めるように public へ
 OUT_FILE = os.path.join(OUT_DIR, "market_data.csv")
 

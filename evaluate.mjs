@@ -44,7 +44,8 @@ export function upsertEntry(entry) {
 
 // 過去 nDays 営業日ぶんのシグナルを「その日までのデータだけ」で再現して履歴に補完する。
 // 既に記録がある日付はスキップ。戻り値は補完した日数。
-export function seedHistory(groups, nDays) {
+// marketGroups を渡すと過去分の市況コンテキスト(ctx)もバックフィルする。
+export function seedHistory(groups, nDays, marketGroups = null) {
   const anyBars = groups.values().next().value;
   const L = anyBars.length;
   const existing = new Set(loadHistory().map((e) => e.date));
@@ -55,6 +56,8 @@ export function seedHistory(groups, nDays) {
     const date = anyBars[idx].date;
     if (existing.has(date)) continue;
     const e = { date, buys: [], sells: [], topsNew: [], invsNew: [], tops: [], invs: [], seed: true };
+    const ctx = buildCtx(marketGroups, date);
+    if (ctx) e.ctx = ctx;
     for (const [sym, bars] of groups) {
       if (bars.length !== L) continue;                          // 日付ズレのある銘柄は安全のためスキップ
       const ci = sym.indexOf(":");
@@ -76,6 +79,44 @@ export function seedHistory(groups, nDays) {
   }
   if (entries.length) saveHistory(loadHistory().concat(entries));
   return entries.length;
+}
+
+// --- 市況コンテキスト（VIX・BTC等）: public/market_data.csv の読み込みと ctx 構築 ---
+export function loadMarketGroups() {
+  const p = new URL("./public/market_data.csv", ROOT);
+  if (!fs.existsSync(p)) return null;                           // 未取得なら市況なしで正常動作
+  const groups = new Map();
+  for (const line of fs.readFileSync(p, "utf8").split(/\r?\n/).slice(1)) {
+    const c = line.split(",");
+    if (c.length < 6) continue;
+    const name = c[0];
+    if (!name || name === "銘柄") continue;
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push({ date: c[1], close: +c[5] });
+  }
+  return groups.size ? groups : null;
+}
+
+// シグナル日 date に対する市況コンテキスト {vix, nk1d, btc7d}（将来の条件付き検証用に記録のみ）。
+// as-of結合: 「date以下で最新の日付」の値を使う（VIXは米国営業日・BTCは毎日と暦が違うため）。
+// 取れない値はキー省略。何も取れなければ null。
+export function buildCtx(marketGroups, date) {
+  if (!marketGroups) return null;
+  const upto = (name) => {
+    const bars = marketGroups.get(name);
+    if (!bars) return null;
+    let i = -1;
+    for (let k = 0; k < bars.length; k++) { if (bars[k].date <= date) i = k; else break; }
+    return i >= 0 ? { bars, i } : null;
+  };
+  const ctx = {};
+  const vix = upto("VIX恐怖指数");
+  if (vix) ctx.vix = +vix.bars[vix.i].close.toFixed(2);
+  const nk = upto("日経225");
+  if (nk && nk.i >= 1) ctx.nk1d = +((nk.bars[nk.i].close / nk.bars[nk.i - 1].close - 1) * 100).toFixed(2);
+  const btc = upto("ビットコイン");
+  if (btc && btc.i >= 7) ctx.btc7d = +((btc.bars[btc.i].close / btc.bars[btc.i - 7].close - 1) * 100).toFixed(2);
+  return Object.keys(ctx).length ? ctx : null;
 }
 
 // 連続日数の算出（history は日付昇順前提）。最新エントリの銘柄集合から1日ずつ遡り、

@@ -4,7 +4,7 @@
 //   使い方:  node screen_daily.mjs        （通常は「毎日スクリーニング.bat」から実行）
 import fs from "node:fs";
 import { analyze, buildSeries, tfSeries } from "./src/analysis.generated.mjs";
-import { upsertEntry, loadHistory, seedHistory, evaluate, classifyRegimes, evaluateByRegime, computeTrust, edgeOf, streaks, buildByCode } from "./evaluate.mjs";
+import { upsertEntry, loadHistory, seedHistory, evaluate, classifyRegimes, evaluateByRegime, computeTrust, edgeOf, streaks, buildByCode, loadMarketGroups, buildCtx } from "./evaluate.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 // ローカルで Webhook URL を入れるなら notify_config.local.json（gitignore済み）を使う。
@@ -206,10 +206,12 @@ const total = groups.size;
 // 履歴はコードのみ保存し、成績は毎回最新CSV（分割調整済み）から日付で引くので分割にも安全。
 // 🆕判定・継続日数・解除もすべて history から導出する（state_*.json の読み書きは廃止）。
 const dataDate = [...groups.values()][0].at(-1).date;   // データの最終営業日（=シグナルの基準日）
+// 市況コンテキスト（VIX・BTC等）。public/market_data.csv が無ければ null＝市況表示・記録なしで正常動作
+const marketGroups = loadMarketGroups();
 if (loadHistory().length < 30) {
   // 初回やCIキャッシュ消失時は過去250営業日ぶんを自動補完（その日までのデータだけで再現＝未来は見ない）。
   // 250日なのはレジーム別（上昇/下落/もみ合い）のサンプルを確保するため。数分かかるが初回のみ。
-  const added = seedHistory(groups, 250);
+  const added = seedHistory(groups, 250, marketGroups);
   if (added) console.log(`検証履歴が薄いため過去 ${added} 営業日分を自動補完しました。`);
 }
 const todayEntry = {
@@ -222,6 +224,10 @@ const todayEntry = {
   tops: tops.map((r) => ({ c: r.code, s: r.status === "confirmed" ? "c" : "f" })),
   invs: invs.map((r) => ({ c: r.code, s: r.status === "confirmed" ? "c" : "f" })),
 };
+{
+  const ctx = buildCtx(marketGroups, dataDate);          // 市況コンテキストを記録（表示・将来の条件付き検証用）
+  if (ctx) todayEntry.ctx = ctx;
+}
 upsertEntry(todayEntry);                                // ※先に書き込む＝streaksが「今日を含む連続日数」になる
 const evalHistory = loadHistory();
 
@@ -356,6 +362,35 @@ const sparkline = (closes) => {
   const col = closes[closes.length - 1] >= closes[0] ? GREEN : RED;
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><path d="${d}" fill="none" stroke="${col}" stroke-width="1.2"/></svg>`;
 };
+
+// 🌍 市況ストリップ（CSVにある指標を全部・動的に。VIXは水準バッジ＋前日比の色反転）
+const marketStrip = (() => {
+  if (!marketGroups) return "";
+  const cards = [];
+  for (const [name, bars] of marketGroups) {
+    if (bars.length < 2) continue;
+    const lastB = bars.at(-1), prevB = bars.at(-2);
+    const chg = lastB.close / prevB.close - 1;
+    const isVix = name.includes("VIX");
+    const chgCol = (isVix ? chg <= 0 : chg >= 0) ? GREEN : RED;   // VIXは上昇=リスク悪化=赤
+    let badge = "";
+    if (isVix) {
+      const [t, c] = lastB.close < 20 ? ["平穏", GREEN] : lastB.close < 30 ? ["警戒", AMBER] : ["恐怖", RED];
+      badge = ` <span class="mbadge" style="border-color:${c};color:${c}">${t}</span>`;
+    }
+    // 鮮度: 最終日付が基準日より5暦日超古い指標は日付を明示（休場・取得失敗の可視化）
+    const staleDays = (new Date(dataDate) - new Date(lastB.date)) / 86400000;
+    const staleTag = staleDays > 5 ? ` <span class="muted">(${lastB.date.slice(5).replace("-", "/")})</span>` : "";
+    const fmtV = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(1));
+    cards.push(
+      `<div class="mcard"><div class="mname">${name}${badge}</div>` +
+      `<div class="mval mono">${fmtV(lastB.close)}${staleTag}</div>` +
+      `<div class="mchg mono" style="color:${chgCol}">${chg >= 0 ? "+" : ""}${(chg * 100).toFixed(2)}%</div>` +
+      `${sparkline(bars.slice(-30).map((b) => b.close))}</div>`
+    );
+  }
+  return cards.length ? `<div class="mstrip">${cards.join("")}</div>` : "";
+})();
 
 // 買い/売りテーブル：スコアを横バーで可視化
 const maxAbs = Math.max(5, ...buys.map((r) => Math.abs(r.score)), ...sells.map((r) => Math.abs(r.score)));
@@ -509,6 +544,13 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rsi i{font-style:normal;font-size:9px;margin-left:3px;opacity:.85}
 .align{font-size:10px;color:${AMBER};border:1px solid ${AMBER};border-radius:3px;padding:0 4px;margin-left:2px}
 .caveat{background:rgba(200,162,74,.08);border:1px solid var(--line);border-left:3px solid ${AMBER};border-radius:6px;padding:8px 12px;font-size:12px;color:var(--mut);margin:10px 0}
+/* 🌍 市況ストリップ */
+.mstrip{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 0}
+.mcard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;min-width:118px}
+.mname{font-size:11px;color:var(--mut);white-space:nowrap}
+.mbadge{font-size:10px;border:1px solid;border-radius:4px;padding:0 4px;font-weight:700}
+.mval{font-size:15px;font-weight:700;margin:1px 0}
+.mchg{font-size:11px;margin-bottom:2px}
 /* 地合いバー・レジーム・信頼度チップ */
 .regimebar{font-size:13px;margin:8px 0 2px}.regimebar .muted{margin-left:8px}
 .regimeline{font-size:12px;color:var(--mut);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 12px;margin:8px 0 0}
@@ -550,6 +592,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <h1>罫線スクリーニング</h1>
 <p class="sub">${today}　／　対象 ${total} 銘柄　／　通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}</p>
 <div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip"><span style="color:#f0a878">RSI70+買われすぎ</span>／<span style="color:#84baea">30-売られすぎ</span></span></div>
+${marketStrip}
 <div class="stats">
 ${stat("🔴 買いサイン", buys.length, nNew(buys), UP)}
 ${stat("🔵 売りサイン", sells.length, nNew(sells), DOWN)}
@@ -675,9 +718,21 @@ async function notify() {
   // LINEは本文を4900字で切るため、注目度の高い順に並べる：
   // 新規ハイライト → 三尊/逆三尊（今回の主目的）→ 買い/売りリスト（件数が多く長い）。
   const tMark = { ok: "✅", warn: "⚠️", hold: "❔" };
+  // 🌍 市況1行（長さ節約のため4指標に限定: 日経・ドル円・VIX・BTC）
+  const marketLine = (() => {
+    if (!marketGroups) return [];
+    const g = (n) => { const b = marketGroups.get(n); return b && b.length >= 2 ? { last: b.at(-1).close, chg: b.at(-1).close / b.at(-2).close - 1 } : null; };
+    const parts = [];
+    const nk = g("日経225"); if (nk) parts.push(`日経${nk.chg >= 0 ? "+" : ""}${(nk.chg * 100).toFixed(1)}%`);
+    const fx = g("ドル円"); if (fx) parts.push(`ドル円${fx.last.toFixed(1)}`);
+    const vx = g("VIX恐怖指数"); if (vx) parts.push(`VIX${vx.last.toFixed(1)}${vx.last >= 30 ? "🚨" : vx.last >= 20 ? "⚠" : ""}`);
+    const bt = g("ビットコイン"); if (bt) parts.push(`BTC$${(bt.last / 1000).toFixed(1)}k${bt.chg >= 0 ? "+" : ""}${(bt.chg * 100).toFixed(1)}%`);
+    return parts.length ? [`🌍 ${parts.join(" ")}`] : [];
+  })();
   let msg = [
     `📊 罫線スクリーニング ${today}`,
     `対象${total}銘柄 ｜ 🔴買い ${buys.length} ｜ 🔵売り ${sells.length} ｜ ⛰️三尊 ${tops.length} ｜ 🛡逆三尊 ${invs.length} ｜ 地合い ${REGIME_JA[currentRegime]}`,
+    ...marketLine,
     `📈 答え合わせ10日後勝率: 買${eLine("buys")} 売${eLine("sells")} 三尊${eLine("topsNew")} 逆三尊${eLine("invsNew")}（蓄積${evalDays}日・カッコ内=対市場）`,
     `信頼度: 買${tMark[trust.buys]} 売${tMark[trust.sells]} 三尊${tMark[trust.topsNew]} 逆三尊${tMark[trust.invsNew]}（直近${RECENT_WINDOW}日と現レジームの成績で機械判定）`,
     ...(dataWarnings.length ? [`🚨 データ異常疑い ${dataWarnings.length}件（レポート参照）`] : []),
