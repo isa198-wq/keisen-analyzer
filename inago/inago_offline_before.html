@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>イナゴ・トレード盤（オフライン版）</title>
+<!-- 外部ライブラリ・CDN依存なし。ネット接続不要でそのまま動作します。 -->
+<script src="data.js" onerror="void(0)"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f1efe9; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; color:#33322f; -webkit-text-size-adjust:100%; }
+  #app { max-width:920px; margin:0 auto; padding:12px; }
+  .tabbar { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
+  .tab { border:1px solid #e3e1da; background:#fff; color:#76746d; border-radius:999px; padding:7px 14px; font-size:13px; cursor:pointer; }
+  .tab.on { background:#33322f; color:#fff; border-color:#33322f; }
+  .panel { background:#faf9f6; border:1px solid #e3e1da; border-radius:12px; padding:16px; margin-bottom:14px; }
+  .h1 { font-size:16px; font-weight:600; margin:0 0 2px; }
+  .sub { font-size:12px; color:#76746d; }
+  .card { border:1px solid #e3e1da; border-radius:10px; padding:10px 12px; background:#fff; margin-bottom:8px; }
+  .chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; background:#f5f3ee; border-radius:8px; padding:2px 7px; margin:2px 3px 0 0; }
+  .bar-track { height:6px; background:#ecebe5; border-radius:3px; overflow:hidden; }
+  .bar-fill { height:100%; }
+  table { width:100%; border-collapse:collapse; background:#fff; }
+  th,td { padding:6px 8px; font-size:12px; }
+  th { color:#76746d; font-size:11px; text-align:left; border-bottom:1px solid #e3e1da; }
+  td { border-bottom:1px solid #ecebe5; text-align:right; }
+  td:first-child, th:first-child { text-align:left; }
+  select { font-size:13px; padding:4px 8px; border:1px solid #e3e1da; border-radius:8px; background:#fff; }
+  button.btn { font-size:11px; border:1px solid #e3e1da; background:#fff; border-radius:8px; padding:3px 9px; cursor:pointer; }
+  .src { font-size:11px; padding:2px 8px; border-radius:999px; }
+  .toggle { font-size:12px; color:#76746d; display:flex; align-items:center; gap:6px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   完全オフライン・イナゴ盤。React/recharts等の外部ライブラリ不使用。
+   data.js（window.INAGO_DATA）があれば実データ、無ければデモで起動。
+============================================================ */
+
+/* ---------- ユーティリティ ---------- */
+const $ = (tag, attrs, ...children) => {
+  const el = document.createElement(tag);
+  for (const k in (attrs||{})) {
+    if (k === "style") Object.assign(el.style, attrs[k]);
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+    else if (k === "html") el.innerHTML = attrs[k];
+    else el.setAttribute(k, attrs[k]);
+  }
+  children.flat().forEach(c => { if (c==null) return; el.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+  return el;
+};
+const svgNS = "http://www.w3.org/2000/svg";
+const SVG = (tag, attrs) => { const el = document.createElementNS(svgNS, tag); for (const k in (attrs||{})) el.setAttribute(k, attrs[k]); return el; };
+const clamp = (x,lo=0,hi=100)=>Math.max(lo,Math.min(hi,x));
+const ramp = (x,a,b,max=100)=> b===a?(x>=b?max:0):clamp(((x-a)/(b-a))*max,0,max);
+function rngGen(seed){ let s=seed; return ()=>{ s=(s*1103515245+12345)&0x7fffffff; return s/0x7fffffff; }; }
+
+/* ---------- 配色 ---------- */
+const C = { up:"#d83a2f", down:"#2f6fd8", ignite:"#f0a818", igniteGlow:"#ffd86b", exit:"#9b1c1c", entry:"#1d9e75", heat:"#ef9f27",
+  border:"#e3e1da", text:"#33322f", sub:"#76746d", grid:"#ecebe5" };
+const STATE_COLOR = { 初動候補:"#f0a818", 継続:"#d83a2f", 過熱:"#ef9f27", 出口:"#9b1c1c", 様子見:"#9c9a92" };
+
+/* ---------- スコアリング ---------- */
+const CFG = { volSma:20, range:60, ma:25, rsiP:14, quiet:3, rvolIgnite:1.8, quietRvolMax:1.3, breakoutPos:0.65,
+  devHot:20, devExtreme:30, rsiHot:72, rsiExtreme:80, consecUpHot:5, upperWickHot:0.45 };
+const smaAt = (arr,p,i)=>{ if(i+1<p) return null; let s=0; for(let k=i-p+1;k<=i;k++) s+=arr[k]; return s/p; };
+function rsiAt(c,p,i){ if(i<p) return 50; let g=0,l=0; for(let k=i-p+1;k<=i;k++){const d=c[k]-c[k-1]; if(d>=0)g+=d; else l-=d;} if(l===0) return 100; const rs=(g/p)/(l/p); return 100-100/(1+rs); }
+function scoreAt(candles,i){
+  const need=Math.max(CFG.volSma,CFG.range,CFG.ma)+2; if(i<need) return null;
+  const closes=candles.map(c=>c.close),vols=candles.map(c=>c.volume),c=candles[i];
+  const volSma=smaAt(vols,CFG.volSma,i),rvol=volSma?c.volume/volSma:1;
+  let pr=0,n=0; for(let k=i-CFG.quiet;k<i;k++){const vs=smaAt(vols,CFG.volSma,k); if(vs){pr+=vols[k]/vs;n++;}}
+  const priorRvol=n?pr/n:rvol;
+  let hi=-Infinity,lo=Infinity; for(let k=i-CFG.range+1;k<=i;k++){if(candles[k].high>hi)hi=candles[k].high; if(candles[k].low<lo)lo=candles[k].low;}
+  const rangePos=hi>lo?(c.close-lo)/(hi-lo):0.5;
+  const ma=smaAt(closes,CFG.ma,i),deviation=ma?((c.close-ma)/ma)*100:0;
+  const tr=(c.high-c.low)||1e-9,body=Math.abs(c.close-c.open);
+  const bodyRatio=body/tr,upperWick=(c.high-Math.max(c.open,c.close))/tr,closePos=(c.close-c.low)/tr,isBull=c.close>=c.open;
+  let consecUp=0; for(let k=i;k>=0;k--){if(candles[k].close>=candles[k].open)consecUp++; else break;}
+  const rsi=rsiAt(closes,CFG.rsiP,i);
+  let v=ramp(rvol,1.2,3.0,60); const ignited=rvol>=CFG.rvolIgnite&&priorRvol<CFG.quietRvolMax;
+  if(ignited)v+=40; else if(priorRvol>=2.0)v-=15; v=clamp(v);
+  let p=ramp(rangePos,0.45,CFG.breakoutPos,100); if(deviation>CFG.devHot)p-=ramp(deviation,CFG.devHot,CFG.devExtreme,60); p=clamp(p);
+  let cs=(isBull?35:0)+ramp(bodyRatio,0.3,0.7,35)+ramp(closePos,0.5,0.9,30)-ramp(upperWick,0.3,0.6,40); cs=clamp(cs);
+  const entryScore=clamp(v*0.45+p*0.30+cs*0.25);
+  let heat=ramp(deviation,CFG.devHot,CFG.devExtreme,40)+ramp(rsi,CFG.rsiHot,CFG.rsiExtreme,30)+ramp(consecUp,CFG.consecUpHot,CFG.consecUpHot+4,15);
+  const distribution=rangePos>0.8&&rvol>2&&upperWick>CFG.upperWickHot&&bodyRatio<0.4; if(distribution)heat+=30;
+  const heatScore=clamp(heat);
+  let state; if(heatScore>=70)state="出口"; else if(heatScore>=45)state="過熱"; else if(entryScore>=65&&heatScore<35)state="初動候補"; else if(entryScore>=45)state="継続"; else state="様子見";
+  return { entryScore:Math.round(entryScore), heatScore:Math.round(heatScore), state, rvol, ignited, distribution };
+}
+
+/* ---------- 実データ・ブリッジ ---------- */
+const RAW = (typeof window!=="undefined" && window.INAGO_DATA) ? window.INAGO_DATA : null;
+function normCandles(arr){
+  return (arr||[]).map(c=>({ date:String(c.date??c.t??c.time??c.Date??""), open:+(c.open??c.o??c.Open), high:+(c.high??c.h??c.High),
+    low:+(c.low??c.l??c.Low), close:+(c.close??c.c??c.Close), volume:+(c.volume??c.v??c.Volume??0) })).filter(c=>isFinite(c.close)&&isFinite(c.open));
+}
+function getStock(code){ if(!RAW||!RAW.stocks||!RAW.stocks[code])return null; const s=RAW.stocks[code]; const cs=normCandles(s.candles||s); return cs.length?{code,name:s.name||code,candles:cs}:null; }
+function listStocks(){ return (RAW&&RAW.stocks)?Object.keys(RAW.stocks):[]; }
+const HAS_REAL = !!(RAW && RAW.stocks && Object.keys(RAW.stocks).length);
+
+/* ---------- デモ生成 ---------- */
+function genArc(seed){ const rnd=rngGen(seed); const out=[]; let price=1000+Math.floor(rnd()*3000);
+  for(let i=0;i<120;i++){ let drift=(rnd()-0.5)*0.004,vol=0.012,vm=0.7+rnd()*0.3;
+    if(i>=70&&i<78){drift=0.025;vol=0.02;vm=2.6+rnd()*1.2;} else if(i>=78&&i<95){drift=0.018;vol=0.018;vm=1.8+rnd()*0.8;}
+    else if(i>=95&&i<108){drift=0.022;vol=0.025;vm=2.2+rnd();} else if(i>=108){drift=-0.005;vol=0.04;vm=3.0+rnd()*1.5;}
+    const open=price; let close=open*(1+drift+(rnd()-0.5)*vol);
+    let high=Math.max(open,close)*(1+rnd()*vol*0.7), low=Math.min(open,close)*(1-rnd()*vol*0.7);
+    if(i>=108) high=Math.max(open,close)*(1+0.025+rnd()*0.02);
+    out.push({date:(Math.floor(i/20)+1)+"/"+((i%20)+1),open:+open.toFixed(1),high:+high.toFixed(1),low:+low.toFixed(1),close:+close.toFixed(1),volume:Math.round(50000*vm*(0.8+rnd()*0.4))}); price=close; }
+  return out; }
+function genTheme(seed,phase,kick){ const rnd=rngGen(seed); const out=[]; let price=1000+Math.floor(rnd()*4000);
+  for(let i=0;i<110;i++){ let drift=(rnd()-0.5)*0.004,vol=0.012,vm=0.7+rnd()*0.3;
+    if(i>=kick){ const prog=(i-kick)/Math.max(1,109-kick);
+      if(phase==="ignite"){drift=prog>0.5?0.024:(rnd()-0.5)*0.005; vm=prog>0.5?2.6+rnd():0.8+rnd()*0.3; vol=0.02;}
+      else if(phase==="run"){drift=0.015+prog*0.006; vm=1.6+prog+rnd()*0.6; vol=0.017;}
+      else if(phase==="hot"){drift=0.018+prog*0.006; vm=1.9+prog*1.2+rnd()*0.6; vol=0.023;}
+      else if(phase==="top"){drift=prog>0.8?-0.006:0.018; vm=2.4+prog*1.6+rnd()*0.6; vol=0.03;} }
+    const open=price; let close=open*(1+drift+(rnd()-0.5)*vol);
+    let high=Math.max(open,close)*(1+rnd()*vol*0.7), low=Math.min(open,close)*(1-rnd()*vol*0.7);
+    if(phase==="top"&&i>=104) high=Math.max(open,close)*(1+0.028+rnd()*0.02);
+    out.push({open,high,low,close:+close.toFixed(1),volume:Math.round(50000*vm*(0.8+rnd()*0.4))}); price=close; }
+  return out; }
+const sig=z=>1/(1+Math.exp(-z));
+function genRel(profile,seed){ const rnd=rngGen(seed); const N=90,out=[]; for(let t=0;t<N;t++){ const u=t/(N-1); let r;
+  switch(profile){ case "aiRoll": r=1+0.18*sig((u-0.35)/0.12)-0.07*sig((u-0.70)/0.07); break;
+    case "buildLead": r=1+0.17*u; break;
+    case "autoWeak": r=1+0.15*sig((u-0.25)/0.10)-0.17*sig((u-0.58)/0.09); break;
+    case "bankImp": r=0.95+0.16*sig((u-0.60)/0.10); break;
+    case "shoshaImp": r=0.98+0.09*sig((u-0.55)/0.12); break;
+    case "itImp": r=0.94+0.14*sig((u-0.50)/0.12); break;
+    case "defImp": r=0.97+0.11*sig((u-0.66)/0.08); break;
+    case "naijuLag": r=1.0-0.12*u; break; default: r=1; }
+  out.push(r*(1+(rnd()-0.5)*0.006)); } return out; }
+
+/* ---------- テーマ/セグメント定義 ---------- */
+const THEMES=[
+  {key:"メモリ",color:"#d83a2f",phase:"top",kick:76,members:[["285A","キオクシア"],["4062","イビデン"]]},
+  {key:"装置",color:"#b8520e",phase:"hot",kick:80,members:[["6857","アドテスト"],["8035","東エレク"],["6146","ディスコ"],["6920","レーザーテック"]]},
+  {key:"電線・光",color:"#c08a06",phase:"hot",kick:84,members:[["5801","古河電工"],["5803","フジクラ"],["5802","住友電工"]]},
+  {key:"重電・変圧器",color:"#1d9e75",phase:"run",kick:88,members:[["6504","富士電機"],["6508","明電舎"],["6503","三菱電機"]]},
+  {key:"電力・発電",color:"#185fa5",phase:"ignite",kick:92,members:[["9501","東電HD"],["9503","関西電力"]]},
+  {key:"空調・冷却",color:"#7f77dd",phase:"ignite",kick:97,members:[["6367","ダイキン"],["1969","高砂熱学"]]},
+];
+const SEGMENTS=[
+  {key:"AI複合体",color:"#d83a2f",profile:"aiRoll",seed:11,note:"半導体・装置・電線・電力"},
+  {key:"建設・設備",color:"#b8520e",profile:"buildLead",seed:23,note:"DC建設・電気工事"},
+  {key:"自動車",color:"#8a6d3b",profile:"autoWeak",seed:31,note:"外需・円高警戒"},
+  {key:"銀行",color:"#185fa5",profile:"bankImp",seed:41,note:"利上げメリット"},
+  {key:"商社",color:"#1d9e75",profile:"shoshaImp",seed:53,note:"バフェット・配当"},
+  {key:"IT・情報通信",color:"#7f55c9",profile:"itImp",seed:61,note:"SaaS・内需DX"},
+  {key:"ディフェンシブ",color:"#3a8f6f",profile:"defImp",seed:73,note:"食品・医薬"},
+  {key:"内需・小売",color:"#9c9a92",profile:"naijuLag",seed:83,note:"出遅れ継続"},
+];
+function buildUniverse(){ return THEMES.map((t,ti)=>{ let seed=7+ti*53;
+  const stocks=t.members.map(([code,name],j)=>{ seed+=53; const rs=getStock(code);
+    if(rs&&rs.candles.length>100) return {code,name:rs.name,candles:rs.candles};
+    const kick=t.kick+(j-1)*2; const phase=(j===t.members.length-1&&t.phase==="top")?"hot":t.phase; return {code,name,candles:genTheme(seed,phase,Math.max(72,kick))};
+  }); return {...t,stocks}; }); }
+const ST_KEYS=["初動候補","継続","過熱","出口"];
+function aggAt(theme,idx){ let e=0,h=0,m=0; const dist={初動候補:0,継続:0,過熱:0,出口:0,様子見:0};
+  theme.stocks.forEach(s=>{ const r=scoreAt(s.candles,idx); if(!r)return; e+=r.entryScore; h+=r.heatScore; dist[r.state]++; m++; });
+  if(!m) return null; return {entry:e/m,heat:h/m,dist,n:m}; }
+function themePhase(a){ const ex=a.dist.出口/a.n, ig=a.dist.初動候補/a.n;
+  if(a.heat>=60||ex>=0.5) return "天井圏"; if(a.heat>=42) return "過熱"; if(ig>=0.4&&a.entry>a.heat) return "初動期"; if(a.entry>=45) return "上昇期"; return "静観"; }
+const PH_STYLE={天井圏:{bg:"#f4dcdc",fg:"#7a1414"},過熱:{bg:"#fbf0db",fg:"#85500a"},初動期:{bg:"#fdf0d6",fg:"#8a5a06"},上昇期:{bg:"#e9f3ea",fg:"#2a6b3a"},静観:{bg:"#efeee9",fg:"#5f5e5a"}};
+
+/* ---------- 市場レジーム（地合い） ---------- */
+function getUniverseStocks(){ return HAS_REAL?listStocks().map(getStock).filter(Boolean):buildUniverse().flatMap(t=>t.stocks); }
+let _MARKET=null;
+function market(){
+  if(_MARKET) return _MARKET;
+  const stocks=getUniverseStocks();
+  const flags=stocks.map(st=>{ const cl=st.candles.map(x=>x.close); return cl.map((v,i)=>{ const ma=smaAt(cl,25,i); return ma==null?null:(v>=ma); }); });
+  const maxLen=Math.max(2,...stocks.map(s=>s.candles.length));
+  const breadth=[];
+  for(let d=0; d<Math.min(maxLen,120); d++){ let a=0,t=0; flags.forEach(f=>{ const i=f.length-1-d; if(i<0)return; const fl=f[i]; if(fl==null)return; t++; if(fl)a++; }); breadth.push(t?a/t*100:null); }
+  const label=b=> b==null?"—": b>=55?"リスクオン": b<=45?"リスクオフ":"中立";
+  const regimeAtOffset=d=>{ const b=breadth[d]; return (b==null)?"neutral": b>=55?"on": b<=45?"off":"neutral"; };
+  _MARKET={breadth,label,regimeAtOffset,today:breadth[0],prev:(breadth[10]!=null?breadth[10]:breadth[breadth.length-1])};
+  return _MARKET;
+}
+const REGIME_STYLE={リスクオン:{bg:"#e9f3ea",fg:"#2a6b3a",dot:"#1d9e75"},中立:{bg:"#fbf3e0",fg:"#85500a",dot:"#ef9f27"},リスクオフ:{bg:"#f4dcdc",fg:"#7a1414",dot:"#9b1c1c"},"—":{bg:"#efeee9",fg:"#5f5e5a",dot:"#9c9a92"}};
+const REGIME_VERDICT={リスクオン:"初動を取りに行ける地合い。妙味の高い初動候補を素直に。",中立:"選別局面。無理に枚数を張らず、過熱・出口は早めに利確。",リスクオフ:"新規は見送り優先。出口サインの手仕舞いを急ぐ。","—":"データ不足。"};
+
+/* ============================================================
+   Tool1: イナゴ個別（ローソク+スコアバー、SVG手描き）
+============================================================ */
+function renderTool1(root){
+  const codes = listStocks();
+  let code = codes[0] || null, onlyIg = false;
+  const panel = $("div",{class:"panel"});
+  root.appendChild(panel);
+
+  function draw(){
+    panel.innerHTML = "";
+    const raw = (code && getStock(code) && getStock(code).candles.length>80) ? getStock(code).candles : genArc(42);
+    const data = raw.map((c,i)=>{ const s=scoreAt(raw,i);
+      return {...c, date:c.date||("#"+i), _state:s?s.state:"様子見", _entry:s?s.entryScore:0, _heat:s?s.heatScore:0, _ignite:s&&s.state==="初動候補"}; });
+    const shown = onlyIg ? data.map(d=>({...d,_entry:d._ignite?d._entry:0,_heat:d._ignite?d._heat:0})) : data;
+    const igCount = data.filter(d=>d._state==="初動候補").length;
+    const latest = [...data].reverse().find(d=>d._entry!=null);
+
+    const head = $("div",{style:{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:"8px",marginBottom:"6px"}},
+      $("div",{},
+        $("div",{class:"h1"},"イナゴ・スキャナー（個別）"),
+        $("div",{class:"sub"}, `初動候補 ${igCount} 本　最新: `, $("b",{style:{color:STATE_COLOR[latest&&latest._state]}}, latest?latest._state:"—"), `（妙味 ${latest?latest._entry:"—"} / 過熱 ${latest?latest._heat:"—"}）`)
+      ),
+      $("div",{style:{display:"flex",gap:"10px",alignItems:"center"}},
+        codes.length>0 ? $("select",{onchange:e=>{code=e.target.value;draw();}},
+          ...codes.map(cd=>{ const s=getStock(cd); const o=$("option",{value:cd},(s&&s.name)||cd); if(cd===code)o.setAttribute("selected","selected"); return o; })
+        ) : null,
+        $("label",{class:"toggle"}, $("input",{type:"checkbox",onchange:e=>{onlyIg=e.target.checked;draw();}, ...(onlyIg?{checked:"checked"}:{})}), "初動だけ")
+      )
+    );
+    panel.appendChild(head);
+    panel.appendChild(candleChart(shown));
+    panel.appendChild(scoreBars(shown));
+    panel.appendChild($("div",{style:{display:"flex",flexWrap:"wrap",gap:"6px 14px",fontSize:"11px",color:C.sub,marginTop:"8px"}},
+      legendDot(C.ignite,"初動候補"), legendDot(C.up,"陽線/継続"), legendDot(C.heat,"過熱"), legendDot(C.exit,"出口"), legendDot(C.entry,"妙味バー")
+    ));
+  }
+  draw();
+}
+function legendDot(color,label){ return $("span",{style:{display:"inline-flex",alignItems:"center",gap:"5px"}}, $("span",{style:{width:"10px",height:"10px",borderRadius:"2px",background:color,display:"inline-block"}}), label); }
+
+function candleChart(data){
+  const W=880,H=260,padL=42,padR=8,padT=8,padB=18;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const lo=Math.min(...data.map(d=>d.low)), hi=Math.max(...data.map(d=>d.high));
+  const pad=(hi-lo)*0.06, yMin=lo-pad, yMax=hi+pad;
+  const x = i => padL + (i+0.5)/data.length*plotW;
+  const y = v => padT + (1-(v-yMin)/(yMax-yMin))*plotH;
+  const bw = Math.max(2, plotW/data.length*0.6);
+
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  // グリッド
+  for(let k=0;k<=4;k++){ const gy=padT+plotH*k/4; svg.appendChild(SVG("line",{x1:padL,y1:gy,x2:W-padR,y2:gy,stroke:C.grid,"stroke-width":1})); }
+  data.forEach((d,i)=>{
+    const up = d.close>=d.open, color = up?C.up:C.down;
+    const cx = x(i);
+    svg.appendChild(SVG("line",{x1:cx,y1:y(d.high),x2:cx,y2:y(d.low),stroke:color,"stroke-width":1.4}));
+    const yTop=y(Math.max(d.open,d.close)), yBot=y(Math.min(d.open,d.close));
+    const h=Math.max(yBot-yTop,1.4);
+    if(d._ignite){ svg.appendChild(SVG("rect",{x:cx-bw/2-1.5,y:yTop-1.5,width:bw+3,height:h+3,rx:2,fill:"none",stroke:C.igniteGlow,"stroke-width":2})); }
+    const rect = SVG("rect",{x:cx-bw/2,y:yTop,width:bw,height:h,rx:1,fill:color});
+    if(d._state==="出口"){ rect.setAttribute("stroke",C.exit); rect.setAttribute("stroke-width","1.2"); }
+    svg.appendChild(rect);
+    if(d._ignite){ svg.appendChild(SVG("path",{d:`M${cx-5},${y(d.high)-9} L${cx+5},${y(d.high)-9} L${cx},${y(d.high)-1} Z`,fill:C.ignite,stroke:"#fff","stroke-width":0.8})); }
+  });
+  // X軸ラベル(間引き)
+  const step=Math.ceil(data.length/10);
+  for(let i=0;i<data.length;i+=step){ svg.appendChild(SVG("text",{x:x(i),y:H-4,"font-size":9,fill:"#9c9a92","text-anchor":"middle"},data[i].date)); }
+  return svg;
+}
+function scoreBars(data){
+  const W=880,H=110,padL=42,padR=8,padT=6,padB=14;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const x = i => padL + (i+0.5)/data.length*plotW;
+  const y = v => padT + (1-v/100)*plotH;
+  const bw = Math.max(2, plotW/data.length*0.55);
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  [0,50,100].forEach(v=>svg.appendChild(SVG("line",{x1:padL,y1:y(v),x2:W-padR,y2:y(v),stroke:C.grid,"stroke-width":1})));
+  svg.appendChild(SVG("line",{x1:padL,y1:y(65),x2:W-padR,y2:y(65),stroke:C.entry,"stroke-width":1,"stroke-dasharray":"3 3",opacity:0.5}));
+  svg.appendChild(SVG("line",{x1:padL,y1:y(45),x2:W-padR,y2:y(45),stroke:C.heat,"stroke-width":1,"stroke-dasharray":"3 3",opacity:0.5}));
+  data.forEach((d,i)=>{ const cx=x(i);
+    svg.appendChild(SVG("rect",{x:cx-bw/2,y:y(d._entry),width:bw/2-0.5,height:Math.max(plotH-(y(d._entry)-padT),0),fill:C.entry}));
+    svg.appendChild(SVG("rect",{x:cx,y:y(d._heat),width:bw/2-0.5,height:Math.max(plotH-(y(d._heat)-padT),0),fill:C.heat}));
+  });
+  return svg;
+}
+
+/* ============================================================
+   Tool2: テーマローテ
+============================================================ */
+function renderTool2(root){
+  const uni = buildUniverse();
+  const last = uni[0].stocks[0].candles.length-1;
+  const TRACK = 40;
+  const days = Array.from({length:TRACK},(_,k)=>last-TRACK+1+k);
+  let sel = THEMES[0].key;
+  const panel = $("div",{class:"panel"});
+  root.appendChild(panel);
+
+  function draw(){
+    panel.innerHTML="";
+    const latest = uni.map(t=>{ const a=aggAt(t,last); return {...t, agg:a, phase:themePhase(a), net:a.entry-a.heat}; });
+    const rotation = [...latest].sort((a,b)=>b.net-a.net);
+    const selTheme = uni.find(t=>t.key===sel);
+    const alerts = rotation.filter(t=>t.phase==="天井圏"||t.phase==="過熱");
+
+    panel.appendChild($("div",{class:"h1"},"テーマ・ローテーション過熱度"));
+    panel.appendChild($("div",{class:"sub",style:{marginBottom:"12px"}},"左ほど鮮度が高い（初動寄り）。右ほど過熱・天井圏。"));
+    if(alerts.length){
+      panel.appendChild($("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px",marginBottom:"12px"}},
+        ...alerts.map(t=>$("span",{style:{fontSize:"12px",background:PH_STYLE[t.phase].bg,color:PH_STYLE[t.phase].fg,padding:"4px 10px",borderRadius:"8px",fontWeight:"600"}},
+          `⚠ ${t.key}：${t.phase}（過熱${Math.round(t.agg.heat)}/出口${t.agg.dist.出口}名）`))
+      ));
+    }
+    const grid = $("div",{style:{display:"grid",gridTemplateColumns:`repeat(${rotation.length},1fr)`,gap:"6px",marginBottom:"16px"}});
+    rotation.forEach(t=>{
+      const ps=PH_STYLE[t.phase], on=t.key===sel;
+      const cell = $("div",{style:{cursor:"pointer",border:`1.5px solid ${on?t.color:C.border}`,borderRadius:"10px",padding:"8px 6px",background:"#fff"},
+        onclick:()=>{sel=t.key;draw();}},
+        $("div",{style:{display:"flex",alignItems:"center",gap:"4px",marginBottom:"5px"}}, $("span",{style:{width:"7px",height:"7px",borderRadius:"4px",background:t.color,display:"inline-block"}}), $("span",{style:{fontSize:"11.5px",fontWeight:"500"}},t.key)),
+        $("span",{style:{fontSize:"10px",background:ps.bg,color:ps.fg,padding:"1px 6px",borderRadius:"8px",fontWeight:"500"}},t.phase),
+        $("div",{style:{marginTop:"7px"}},
+          $("div",{style:{fontSize:"9px",color:C.sub,display:"flex",justifyContent:"space-between"}},$("span",{},"過熱"),$("span",{},Math.round(t.agg.heat))),
+          $("div",{class:"bar-track"},$("div",{class:"bar-fill",style:{width:t.agg.heat+"%",background:t.agg.heat>=60?"#9b1c1c":"#ef9f27"}})),
+          $("div",{style:{fontSize:"9px",color:C.sub,display:"flex",justifyContent:"space-between",marginTop:"3px"}},$("span",{},"妙味"),$("span",{},Math.round(t.agg.entry))),
+          $("div",{class:"bar-track"},$("div",{class:"bar-fill",style:{width:t.agg.entry+"%",background:"#1d9e75"}}))
+        ),
+        $("div",{style:{display:"flex",flexWrap:"wrap",gap:"3px",marginTop:"6px"}},
+          ...ST_KEYS.filter(k=>t.agg.dist[k]>0).map(k=>$("span",{style:{fontSize:"9px",color:STATE_COLOR[k],background:"#f5f3ee",padding:"0 4px",borderRadius:"6px"}},k.replace("候補","")+t.agg.dist[k]))
+        )
+      );
+      grid.appendChild(cell);
+    });
+    panel.appendChild(grid);
+
+    panel.appendChild($("div",{style:{fontSize:"13px",fontWeight:"500",marginBottom:"4px"}},"テーマ別 過熱度の推移"));
+    panel.appendChild(multiLineChart(days.map(d=>{ const row={label:"D-"+(last-d)}; uni.forEach(t=>{ const a=aggAt(t,d); row[t.key]=a?a.heat:null; }); return row; }), uni.map(t=>({key:t.key,color:t.color,bold:t.key===sel})), 0, 100, 60));
+
+    panel.appendChild($("div",{style:{fontSize:"13px",fontWeight:"500",margin:"12px 0 4px"}}, `「${sel}」の状態分布 `, $("span",{style:{fontSize:"11px",color:C.sub,fontWeight:"400"}},"— 初動が枯れ出口が増えたら天井")));
+    panel.appendChild(stackedAreaChart(days.map(d=>{ const a=aggAt(selTheme,d); const row={label:"D-"+(last-d)}; ST_KEYS.forEach(k=>row[k]=a?a.dist[k]:0); return row; }), ST_KEYS.map(k=>({key:k,color:STATE_COLOR[k]}))));
+  }
+  draw();
+}
+
+/* ============================================================
+   Tool3: 市場RRG
+============================================================ */
+const W_=20, MOM_LAG=5, TAIL=12;
+function zAt(arr,i,w){ if(i+1<w)return 0; let m=0; for(let k=i-w+1;k<=i;k++)m+=arr[k]; m/=w; let v=0; for(let k=i-w+1;k<=i;k++)v+=(arr[k]-m)**2; v/=w; const sd=Math.sqrt(v); return sd===0?0:(arr[i]-m)/sd; }
+const clampR=(x,lo,hi)=>Math.max(lo,Math.min(hi,x));
+function computeRRG(index,bench){ const n=index.length; const rs=index.map((v,i)=>v/bench[i]); const ratio=rs.map((_,i)=>100+zAt(rs,i,W_));
+  const dR=ratio.map((v,i)=>i>=MOM_LAG?v-ratio[i-MOM_LAG]:0); const mom=dR.map((_,i)=>100+zAt(dR,i,W_));
+  const pts=[]; for(let i=n-TAIL;i<n;i++) pts.push({x:clampR(ratio[i],96.6,103.4),y:clampR(mom[i],96.6,103.4),op:0.25+0.75*((i-(n-TAIL))/(TAIL-1)),isHead:i===n-1}); return pts; }
+const QUAD=(x,y)=>x>=100?(y>=100?"Leading":"Weakening"):(y>=100?"Improving":"Lagging");
+const QUAD_JP={Leading:"主役",Weakening:"失速",Improving:"改善",Lagging:"出遅れ"};
+function renderTool3(root){
+  const panel = $("div",{class:"panel"}); root.appendChild(panel);
+  const bench = Array(90).fill(1);
+  const series = SEGMENTS.map(s=>{ const idx=genRel(s.profile,s.seed); const pts=computeRRG(idx,bench); return {...s,pts,head:pts[pts.length-1]}; });
+  const buckets={Leading:[],Weakening:[],Improving:[],Lagging:[]}; series.forEach(s=>buckets[QUAD(s.head.x,s.head.y)].push(s.key));
+
+  panel.appendChild($("div",{class:"h1"},"市場ローテーション RRG"));
+  panel.appendChild($("div",{class:"sub",style:{marginBottom:"8px"}},"相対力。資金は象限を時計回り（改善→主役→失速→出遅れ）。"));
+  panel.appendChild(rrgChart(series));
+  const sumGrid = $("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginTop:"8px"}});
+  [["Improving","#185fa5","改善＝次の主役候補"],["Leading","#1d9e75","主役＝資金の中心"],["Weakening","#d83a2f","失速＝利確警戒"],["Lagging","#9c9a92","出遅れ＝不人気"]].forEach(([q,col,desc])=>{
+    sumGrid.appendChild($("div",{class:"card"}, $("div",{style:{fontSize:"12px",fontWeight:"600",color:col}},`${QUAD_JP[q]} ${q}`),
+      $("div",{style:{fontSize:"12px",margin:"2px 0"}}, buckets[q].length?buckets[q].join("・"):"—"), $("div",{style:{fontSize:"10.5px",color:C.sub}},desc)));
+  });
+  panel.appendChild(sumGrid);
+}
+function rrgChart(series){
+  const W=880,H=420,pad=40;
+  const D=[96.6,103.4];
+  const x = v => pad + (v-D[0])/(D[1]-D[0])*(W-2*pad);
+  const y = v => H-pad - (v-D[0])/(D[1]-D[0])*(H-2*pad);
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  // 象限背景
+  svg.appendChild(SVG("rect",{x:x(100),y:pad,width:x(D[1])-x(100),height:y(100)-pad,fill:"#1d9e75",opacity:0.06}));
+  svg.appendChild(SVG("rect",{x:x(100),y:y(100),width:x(D[1])-x(100),height:(H-pad)-y(100),fill:"#d83a2f",opacity:0.06}));
+  svg.appendChild(SVG("rect",{x:x(D[0]),y:y(100),width:x(100)-x(D[0]),height:(H-pad)-y(100),fill:"#9c9a92",opacity:0.07}));
+  svg.appendChild(SVG("rect",{x:x(D[0]),y:pad,width:x(100)-x(D[0]),height:y(100)-pad,fill:"#185fa5",opacity:0.06}));
+  svg.appendChild(SVG("line",{x1:x(100),y1:pad,x2:x(100),y2:H-pad,stroke:"#bdbbb2"}));
+  svg.appendChild(SVG("line",{x1:pad,y1:y(100),x2:W-pad,y2:y(100),stroke:"#bdbbb2"}));
+  svg.appendChild(SVG("text",{x:W-pad-4,y:pad+14,"font-size":11,fill:"#1d7a5a","text-anchor":"end"},"主役 Leading"));
+  svg.appendChild(SVG("text",{x:W-pad-4,y:H-pad-6,"font-size":11,fill:"#b03127","text-anchor":"end"},"失速 Weakening"));
+  svg.appendChild(SVG("text",{x:pad+4,y:H-pad-6,"font-size":11,fill:"#76746d"},"出遅れ Lagging"));
+  svg.appendChild(SVG("text",{x:pad+4,y:pad+14,"font-size":11,fill:"#185fa5"},"改善 Improving"));
+  series.forEach(s=>{
+    let path=`M ${x(s.pts[0].x)} ${y(s.pts[0].y)}`;
+    s.pts.forEach(p=>path+=` L ${x(p.x)} ${y(p.y)}`);
+    svg.appendChild(SVG("path",{d:path,fill:"none",stroke:s.color,"stroke-width":1.4,opacity:0.4}));
+    s.pts.forEach(p=>{ if(!p.isHead) svg.appendChild(SVG("circle",{cx:x(p.x),cy:y(p.y),r:2.6,fill:s.color,opacity:p.op})); });
+    const head=s.pts[s.pts.length-1];
+    svg.appendChild(SVG("circle",{cx:x(head.x),cy:y(head.y),r:6,fill:s.color,stroke:"#fff","stroke-width":1.5}));
+    svg.appendChild(SVG("text",{x:x(head.x)+9,y:y(head.y)+4,"font-size":11,"font-weight":600,fill:C.text},s.key));
+  });
+  return svg;
+}
+
+/* ============================================================
+   Tool4: 検証（バックテスト）
+============================================================ */
+function renderTool4(root){
+  const stocks = HAS_REAL ? listStocks().map(getStock).filter(Boolean) : buildUniverse().flatMap(t=>t.stocks);
+  let N = 5;
+  const panel = $("div",{class:"panel"}); root.appendChild(panel);
+  const STS=["初動候補","継続","過熱","出口","様子見"];
+
+  function compute(){
+    const acc={}; STS.forEach(s=>acc[s]={n:0,hit:0,sum:0,mfe:0,mae:0,up:{n:0,hit:0},dn:{n:0,hit:0},on:{n:0,hit:0,sum:0},off:{n:0,hit:0,sum:0},neu:{n:0,hit:0,sum:0}});
+    const cal={"65-74":{n:0,hit:0},"75-84":{n:0,hit:0},"85-100":{n:0,hit:0}};
+    const M = market();
+    const need=Math.max(CFG.volSma,CFG.range,CFG.ma)+2;
+    stocks.forEach(st=>{ const c=st.candles; const closes=c.map(x=>x.close);
+      for(let i=need;i<c.length-N;i++){ const r=scoreAt(c,i); if(!r) continue;
+        const base=c[i].close; const fwd=(c[i+N].close/base-1)*100;
+        let mx=-1e9,mn=1e9; for(let k=i+1;k<=i+N;k++){ const hp=(c[k].high/base-1)*100,lp=(c[k].low/base-1)*100; if(hp>mx)mx=hp; if(lp<mn)mn=lp; }
+        const a=acc[r.state]; a.n++; if(fwd>0)a.hit++; a.sum+=fwd; a.mfe+=mx; a.mae+=mn;
+        const up = closes[i] >= (smaAt(closes,25,i)||closes[i]); const t = up?a.up:a.dn; t.n++; if(fwd>0)t.hit++;
+        const reg = M.regimeAtOffset((c.length-1)-i); const rb = a[reg]; rb.n++; rb.sum+=fwd; if(fwd>0)rb.hit++;
+        if(r.state==="初動候補"){ const b=r.entryScore<75?"65-74":r.entryScore<85?"75-84":"85-100"; cal[b].n++; if(fwd>0)cal[b].hit++; }
+      } });
+    return {acc,cal};
+  }
+
+  function draw(){
+    panel.innerHTML="";
+    const {acc,cal} = compute();
+    const exp = a => a.n ? a.sum/a.n : 0;
+    const ig=acc["初動候補"], hot=acc["過熱"], ex=acc["出口"];
+    const works = ig.n>=20 && exp(ig)>0 && exp(ig)>exp(hot) && exp(ex)<exp(ig);
+
+    panel.appendChild($("div",{style:{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:"8px",marginBottom:"8px"}},
+      $("div",{}, $("div",{class:"h1"},"シグナル検証（バックテスト）"), $("div",{class:"sub"},`各状態が出た後 ${N} 営業日の成績。`)),
+      $("div",{class:"sub"}, "先読み日数: ", ...[3,5,10].map(n=>$("button",{class:"btn",style:{marginRight:"4px",fontWeight:N===n?"700":"400"},onclick:()=>{N=n;draw();}},n+"日")))
+    ));
+
+    const table = $("table",{},
+      $("thead",{}, $("tr",{}, $("th",{},"状態"), $("th",{},"件数"), $("th",{},"勝率"), $("th",{},"期待値"), $("th",{},"平均MFE"), $("th",{},"平均MAE"))),
+      $("tbody",{}, ...STS.filter(s=>acc[s].n>0).map(s=>{ const a=acc[s]; const e=exp(a);
+        return $("tr",{}, $("td",{}, legendDot(STATE_COLOR[s],s)), $("td",{},String(a.n)), $("td",{},(a.hit/a.n*100).toFixed(0)+"%"),
+          $("td",{style:{color:e>=0?C.entry:C.exit,fontWeight:"700"}},(e>=0?"+":"")+e.toFixed(2)+"%"),
+          $("td",{style:{color:C.entry}},"+"+(a.mfe/a.n).toFixed(1)+"%"), $("td",{style:{color:C.exit}},(a.mae/a.n).toFixed(1)+"%"));
+      }))
+    );
+    panel.appendChild($("div",{style:{overflowX:"auto"}},table));
+
+    panel.appendChild($("div",{style:{fontSize:"13px",fontWeight:"500",margin:"14px 0 4px"}},`状態別の期待値（${N}日先リターン）`));
+    const chartData = STS.filter(s=>acc[s].n>0).map(s=>({label:s,val:exp(acc[s])}));
+    panel.appendChild(simpleBarChart(chartData));
+
+    const grid = $("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginTop:"12px"}});
+    const calCard = $("div",{class:"card"}, $("div",{style:{fontSize:"12px",fontWeight:"600",marginBottom:"6px"}},"初動候補の較正（妙味スコア別 勝率）"));
+    ["65-74","75-84","85-100"].forEach(b=>{ const x=cal[b];
+      calCard.appendChild($("div",{style:{display:"flex",alignItems:"center",gap:"8px",margin:"4px 0"}},
+        $("span",{style:{fontSize:"11px",color:C.sub,width:"48px",display:"inline-block"}},b),
+        $("div",{class:"bar-track",style:{flex:"1"}},$("div",{class:"bar-fill",style:{width:(x.n?x.hit/x.n*100:0)+"%",background:C.ignite}})),
+        $("span",{style:{fontSize:"11px",width:"72px",textAlign:"right",color:C.sub,display:"inline-block"}}, x.n?(x.hit/x.n*100).toFixed(0)+"% ("+x.n+")":"—")
+      ));
+    });
+    calCard.appendChild($("div",{style:{fontSize:"10.5px",color:C.sub,marginTop:"4px"}},"スコアが高いほど勝率が上がっていれば、妙味スコアは機能している。"));
+
+    const regimeCard = $("div",{class:"card"}, $("div",{style:{fontSize:"12px",fontWeight:"600",marginBottom:"6px"}},"初動候補：地合い別の勝率・期待値"));
+    [["リスクオン","on","#1d9e75"],["中立","neu","#ef9f27"],["リスクオフ","off","#9b1c1c"]].forEach(([lbl,k,col])=>{
+      const x=ig[k]; const e = x.n? x.sum/x.n : 0;
+      regimeCard.appendChild($("div",{style:{display:"flex",alignItems:"center",gap:"8px",margin:"5px 0"}},
+        $("span",{style:{fontSize:"11px",color:C.sub,width:"64px",display:"inline-block"}},lbl),
+        $("div",{class:"bar-track",style:{flex:"1"}},$("div",{class:"bar-fill",style:{width:(x.n?x.hit/x.n*100:0)+"%",background:col}})),
+        $("span",{style:{fontSize:"11px",width:"36px",textAlign:"right",display:"inline-block"}}, x.n?(x.hit/x.n*100).toFixed(0)+"%":"—"),
+        $("span",{style:{fontSize:"11px",width:"64px",textAlign:"right",color:e>=0?C.entry:C.exit,fontWeight:"700",display:"inline-block"}}, x.n?(e>=0?"+":"")+e.toFixed(2)+"%":"—")
+      ));
+    });
+    regimeCard.appendChild($("div",{style:{fontSize:"10.5px",color:C.sub,marginTop:"4px"}},"リスクオンで勝率・期待値が高いほど、地合いゲージがスイッチとして機能する。"));
+    grid.appendChild(calCard); grid.appendChild(regimeCard);
+    panel.appendChild(grid);
+
+    panel.appendChild($("div",{style:{fontSize:"12px",marginTop:"12px",padding:"8px 12px",borderRadius:"8px",background:works?"#e9f3ea":"#fbeede",color:works?"#2a6b3a":"#85500a"}},
+      works? "✓ ロジックは機能：初動候補の期待値がプラスで、過熱・出口を上回っています。" : "△ 要チューニング：初動候補の優位が出ていません。CFGのしきい値を調整してください。"
+    ));
+    panel.appendChild($("div",{style:{fontSize:"10.5px",color:C.sub,marginTop:"8px"}},"※ ヒストリカルな自己検証で、将来の成績を保証しません。投資助言ではありません。"));
+  }
+  draw();
+}
+
+/* ============================================================
+   Tool5: 新テーマ検知
+============================================================ */
+const KNOWN_CODES = new Set(THEMES.flatMap(t=>t.members.map(m=>m[0])));
+function retSeries(candles,win){ const c=candles.slice(-(win+1)); const out=[]; for(let i=1;i<c.length;i++) out.push(c[i].close/c[i-1].close-1); return out; }
+function pearson(a,b){ const n=Math.min(a.length,b.length); if(n<5) return 0; let sa=0,sb=0; for(let i=0;i<n;i++){sa+=a[a.length-n+i]; sb+=b[b.length-n+i];} sa/=n; sb/=n;
+  let num=0,da=0,db=0; for(let i=0;i<n;i++){ const x=a[a.length-n+i]-sa,y=b[b.length-n+i]-sb; num+=x*y; da+=x*x; db+=y*y; } const d=Math.sqrt(da*db); return d===0?0:num/d; }
+function genCluster(){ const base=genTheme(999,"ignite",90); const list=[["X001","新規点火A"],["X002","新規点火B"],["X003","新規点火C"],["X004","新規点火D"]];
+  return list.map(([code,name],j)=>{ const rnd=rngGen(700+j*17);
+    const candles=base.map(c=>{ const k=1+(rnd()-0.5)*0.02; return {open:c.open*k,high:c.high*k,low:c.low*k,close:+(c.close*k).toFixed(1),volume:Math.round(c.volume*(0.8+rnd()*0.4))}; });
+    return {code,name,candles}; }); }
+const promptFor = ms => `次の日本株が直近で同時に出来高急増・株価上昇しています：\n${ms.map(m=>m.name+"("+m.code+")").join("、")}\n\nこれらに共通する『今』の物色テーマ（材料・カタリスト）を、Xの直近投稿と最新ニュースから特定してください。無理に結びつけないこと。\n出力はJSONのみ: {"name":"テーマ名","catalyst":"共通材料(1-2文)","confidence":"高|中|低","core_tickers":[],"sources":[]}\n共通項が薄ければ confidence=低、name=共通テーマ不明瞭。`;
+const copyText = t => { try{ navigator.clipboard.writeText(t); }catch(e){ const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy");}catch(_){} document.body.removeChild(ta);} };
+function renderTool5(root){
+  const panel = $("div",{class:"panel"}); root.appendChild(panel);
+  const K=8, WIN=20, TH=0.55;
+  const universe = HAS_REAL ? listStocks().map(getStock).filter(Boolean) : [...buildUniverse().flatMap(t=>t.stocks), ...genCluster()];
+  const CLUSTER_NAMES = (typeof window!=="undefined" && window.INAGO_CLUSTER_NAMES) || {};
+  const ckey = ms => ms.map(m=>m.code).slice().sort().join(",");
+
+  const igniters=[];
+  universe.forEach(st=>{ const c=st.candles; if(c.length<WIN+2) return; const i=c.length-1; const r=scoreAt(c,i); if(!r) return;
+    let recency=99; for(let d=0;d<=K;d++){ const rr=scoreAt(c,i-d); if(rr&&rr.ignited){recency=d;break;} }
+    const fresh = (r.state==="初動候補") || (recency<=K && r.state!=="出口" && r.state!=="過熱");
+    if(fresh) igniters.push({code:st.code,name:st.name,entry:r.entryScore,recency:Math.min(recency,K+1),ret:retSeries(c,WIN)});
+  });
+  igniters.sort((a,b)=>b.entry-a.entry);
+  const used=new Set(), clusters=[];
+  for(const seed of igniters){ if(used.has(seed.code)) continue; used.add(seed.code); const cl=[seed];
+    for(const o of igniters){ if(used.has(o.code)) continue; let s=0,cnt=0; cl.forEach(m=>{ const r=pearson(m.ret,o.ret); if(isFinite(r)){s+=r;cnt++;} }); if(cnt && s/cnt>=TH){cl.push(o); used.add(o.code);} }
+    clusters.push(cl);
+  }
+  const evalC = cl => { const size=cl.length; const avgEntry=cl.reduce((s,m)=>s+m.entry,0)/size; const fresh=Math.min(...cl.map(m=>m.recency));
+    let ps=0,pc=0; for(let i=0;i<cl.length;i++) for(let j=i+1;j<cl.length;j++){ ps+=pearson(cl[i].ret,cl[j].ret); pc++; } const avgCorr=pc?ps/pc:1;
+    const newCount=cl.filter(m=>!KNOWN_CODES.has(m.code)).length; return {members:cl,size,avgEntry,fresh,avgCorr,newness:newCount/size}; };
+  const big = clusters.filter(c=>c.length>=2).map(evalC);
+  const newClusters = big.filter(c=>c.newness>=0.5).sort((a,b)=>(b.size-a.size)||(b.avgEntry-a.avgEntry));
+  const knownClusters = big.filter(c=>c.newness<0.5).sort((a,b)=>b.avgEntry-a.avgEntry);
+  const singles = clusters.filter(c=>c.length===1).map(c=>c[0]).sort((a,b)=>b.entry-a.entry);
+  const L=30, timeline=[]; for(let d=L-1; d>=0; d--){ let cnt=0; universe.forEach(st=>{ const c=st.candles; const i=c.length-1-d; if(i<25) return; const rr=scoreAt(c,i); if(rr&&rr.ignited) cnt++; }); timeline.push(cnt); }
+  const freshN = igniters.length, freshNew = igniters.filter(m=>!KNOWN_CODES.has(m.code)).length;
+
+  panel.appendChild($("div",{class:"h1"},"新テーマ検知（点火クラスタ）"));
+  panel.appendChild($("div",{class:"sub",style:{marginBottom:"10px"}},"広いユニバースから“今点火した”銘柄を拾い、相関で塊にまとめ、既知テーマ外を新候補として表示。"));
+  panel.appendChild($("div",{style:{fontSize:"12.5px",marginBottom:"8px"}}, `本日の新規点火 `, $("b",{},String(freshN)), ` 銘柄（うち既知テーマ外 `, $("b",{style:{color:"#8a5a06"}},String(freshNew)), `）／走査 ${universe.length} 銘柄`));
+
+  const tlWrap = $("div",{class:"card"}, $("div",{style:{fontSize:"11px",color:C.sub,marginBottom:"4px"}},"同時点火タイムライン（直近30日）— スパイク＝テーマ誕生の予兆"));
+  const maxT = Math.max(1,...timeline);
+  const tlSvg = SVG("svg",{width:"100%",viewBox:"0 0 300 46",preserveAspectRatio:"none",style:"display:block"});
+  timeline.forEach((cnt,i)=>{ const bw=300/timeline.length; const bh=(cnt/maxT)*40;
+    tlSvg.appendChild(SVG("rect",{x:i*bw+1,y:44-bh,width:bw-2,height:bh,fill:cnt>=maxT*0.7?"#f0a818":"#cfcdc4",rx:1})); });
+  tlWrap.appendChild(tlSvg); panel.appendChild(tlWrap);
+
+  function chip(m){ return $("span",{class:"chip"}, m.name, $("span",{style:{color:C.sub}}," "+m.code), $("span",{style:{color:C.entry}}," 妙"+m.entry)); }
+  function card(c, idx){
+    const nm = CLUSTER_NAMES[ckey(c.members)];
+    const el = $("div",{class:"card"},
+      $("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}},
+        c.newness>=0.5 ? $("span",{style:{fontSize:"12px",fontWeight:"600",background:"#fdf0d6",color:"#8a5a06",padding:"2px 8px",borderRadius:"8px"}},`新テーマ候補 ${String.fromCharCode(65+idx)}`)
+                       : $("span",{style:{fontSize:"12px",fontWeight:"600",background:"#eef2f6",color:"#2a5572",padding:"2px 8px",borderRadius:"8px"}},"既知テーマが再加速"),
+        $("span",{style:{fontSize:"11px",color:C.sub}}, `${c.size}銘柄・相関${c.avgCorr.toFixed(2)}・平均妙味${c.avgEntry.toFixed(0)}・点火${c.fresh}日前`)
+      ),
+      $("div",{style:{marginTop:"6px"}}, ...c.members.map(chip))
+    );
+    if(nm){ el.appendChild($("div",{style:{marginTop:"7px",padding:"7px 9px",background:"#f6f4ef",borderRadius:"8px"}},
+      $("div",{style:{fontSize:"12.5px",fontWeight:"600"}}, "🏷 "+nm.name+" ", $("span",{style:{fontSize:"10.5px",fontWeight:"400",color:nm.confidence==="高"?C.entry:nm.confidence==="低"?C.exit:C.sub}},"確度"+nm.confidence)),
+      nm.catalyst ? $("div",{style:{fontSize:"11px",color:C.sub,marginTop:"2px"}},nm.catalyst) : null
+    )); }
+    if(c.newness>=0.5){ el.appendChild($("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"7px",flexWrap:"wrap"}},
+      $("button",{class:"btn",onclick:()=>copyText(promptFor(c.members))},"Grok命名プロンプトをコピー"),
+      $("span",{style:{fontSize:"10.5px",color:C.sub}}, nm?"再確認はXで":"X/grok.comに貼って材料を特定 → watchlist昇格")
+    )); }
+    return el;
+  }
+  if(newClusters.length){
+    panel.appendChild($("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",margin:"4px 0 6px"}},
+      $("div",{style:{fontSize:"13px",fontWeight:"600",color:"#8a5a06"}},"🔆 新テーマ候補（命名待ち）"),
+      $("button",{class:"btn",onclick:()=>copyText(JSON.stringify(newClusters.map(c=>({members:c.members.map(m=>({code:m.code,name:m.name}))})),null,2))},"全候補をJSONでコピー")
+    ));
+    newClusters.forEach((c,i)=>panel.appendChild(card(c,i)));
+  } else {
+    panel.appendChild($("div",{style:{fontSize:"12px",color:C.sub,padding:"6px 0"}},"既知テーマ外の新規クラスタは検出されていません。"));
+  }
+  if(knownClusters.length){
+    panel.appendChild($("div",{style:{fontSize:"13px",fontWeight:"600",margin:"10px 0 6px",color:"#2a5572"}},"既知テーマの再加速"));
+    knownClusters.forEach((c,i)=>panel.appendChild(card(c,i)));
+  }
+  if(singles.length){
+    panel.appendChild($("div",{style:{marginTop:"10px"}}, $("div",{style:{fontSize:"12px",fontWeight:"600",marginBottom:"4px"}},"単独点火（クラスタ未形成・要監視）"),
+      $("div",{}, ...singles.slice(0,12).map(chip))));
+  }
+  panel.appendChild($("div",{style:{fontSize:"10.5px",color:C.sub,marginTop:"12px",lineHeight:"1.6"}},"※ 検知力はユニバースの広さ次第。命名は価格だけでは不可能なのでX/ニュースで補完。投資助言ではありません。"));
+}
+
+/* ============================================================
+   汎用チャート部品
+============================================================ */
+function multiLineChart(rows, series, yMinFix, yMaxFix, height){
+  const W=880,H=height||190,padL=36,padR=8,padT=8,padB=18;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const yMin = yMinFix!=null?yMinFix:Math.min(...rows.flatMap(r=>series.map(s=>r[s.key]).filter(v=>v!=null)));
+  const yMax = yMaxFix!=null?yMaxFix:Math.max(...rows.flatMap(r=>series.map(s=>r[s.key]).filter(v=>v!=null)));
+  const x = i => padL + i/(rows.length-1)*plotW;
+  const y = v => padT + (1-(v-yMin)/(yMax-yMin||1))*plotH;
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  [0,0.5,1].forEach(f=>svg.appendChild(SVG("line",{x1:padL,y1:padT+plotH*f,x2:W-padR,y2:padT+plotH*f,stroke:C.grid,"stroke-width":1})));
+  if(yMinFix===0 && yMaxFix===100) svg.appendChild(SVG("line",{x1:padL,y1:y(60),x2:W-padR,y2:y(60),stroke:"#9b1c1c","stroke-width":1,"stroke-dasharray":"3 3",opacity:0.5}));
+  series.forEach(s=>{
+    let d=""; rows.forEach((r,i)=>{ const v=r[s.key]; if(v==null) return; d += (d?" L ":"M ")+x(i)+" "+y(v); });
+    svg.appendChild(SVG("path",{d,fill:"none",stroke:s.color,"stroke-width":s.bold?2.6:1.2,opacity:s.bold?1:0.5}));
+  });
+  const step=Math.ceil(rows.length/8);
+  for(let i=0;i<rows.length;i+=step) svg.appendChild(SVG("text",{x:x(i),y:H-4,"font-size":9,fill:"#9c9a92","text-anchor":"middle"},rows[i].label));
+  // 凡例
+  const legend = $("div",{style:{display:"flex",flexWrap:"wrap",gap:"6px 12px",fontSize:"11px",color:C.sub,marginTop:"2px"}},
+    ...series.map(s=>legendDot(s.color,s.key)));
+  const wrap = $("div",{}); wrap.appendChild(svg); wrap.appendChild(legend); return wrap;
+}
+function stackedAreaChart(rows, series){
+  const W=880,H=160,padL=30,padR=8,padT=8,padB=18;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const totals = rows.map(r=>series.reduce((s,k)=>s+(r[k.key]||0),0));
+  const yMax = Math.max(1,...totals);
+  const x = i => padL + i/(rows.length-1)*plotW;
+  const y = v => padT + (1-v/yMax)*plotH;
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  [0,0.5,1].forEach(f=>svg.appendChild(SVG("line",{x1:padL,y1:padT+plotH*f,x2:W-padR,y2:padT+plotH*f,stroke:C.grid,"stroke-width":1})));
+  const base = rows.map(()=>0);
+  series.forEach(s=>{
+    let top=`M ${x(0)} ${y(base[0]+(rows[0][s.key]||0))}`;
+    for(let i=1;i<rows.length;i++){ base[i]=base[i]; top+=` L ${x(i)} ${y(base[i]+(rows[i][s.key]||0))}`; }
+    let bottom=`L ${x(rows.length-1)} ${y(base[rows.length-1])}`;
+    for(let i=rows.length-2;i>=0;i--) bottom+=` L ${x(i)} ${y(base[i])}`;
+    svg.appendChild(SVG("path",{d:top+" "+bottom+" Z",fill:s.color,opacity:0.75}));
+    for(let i=0;i<rows.length;i++) base[i]+= (rows[i][s.key]||0);
+  });
+  const step=Math.ceil(rows.length/8);
+  for(let i=0;i<rows.length;i+=step) svg.appendChild(SVG("text",{x:x(i),y:H-4,"font-size":9,fill:"#9c9a92","text-anchor":"middle"},rows[i].label));
+  const legend = $("div",{style:{display:"flex",flexWrap:"wrap",gap:"6px 12px",fontSize:"11px",color:C.sub,marginTop:"2px"}}, ...series.map(s=>legendDot(s.color,s.key)));
+  const wrap=$("div",{}); wrap.appendChild(svg); wrap.appendChild(legend); return wrap;
+}
+function simpleBarChart(data){
+  const W=880,H=160,padL=36,padR=8,padT=8,padB=20;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const vals = data.map(d=>d.val);
+  const yMin=Math.min(0,...vals), yMax=Math.max(0.1,...vals);
+  const y = v => padT + (1-(v-yMin)/(yMax-yMin))*plotH;
+  const bw = plotW/data.length*0.55;
+  const svg = SVG("svg",{width:"100%",viewBox:`0 0 ${W} ${H}`,style:"display:block"});
+  svg.appendChild(SVG("line",{x1:padL,y1:y(0),x2:W-padR,y2:y(0),stroke:"#bdbbb2"}));
+  data.forEach((d,i)=>{ const cx=padL+(i+0.5)/data.length*plotW;
+    const top=Math.min(y(0),y(d.val)), h=Math.abs(y(d.val)-y(0));
+    svg.appendChild(SVG("rect",{x:cx-bw/2,y:top,width:bw,height:Math.max(h,1),fill:d.val>=0?C.entry:C.exit}));
+    svg.appendChild(SVG("text",{x:cx,y:H-6,"font-size":11,fill:C.sub,"text-anchor":"middle"},d.label));
+  });
+  return svg;
+}
+
+/* ============================================================
+   地合いバンド
+============================================================ */
+function renderRegimeBand(root){
+  const M = market();
+  const lbl = M.label(M.today); const st = REGIME_STYLE[lbl];
+  const arrow = (M.today!=null && M.prev!=null) ? (M.today-M.prev>3?"↑改善":M.today-M.prev<-3?"↓悪化":"→横ばい") : "";
+  const series = M.breadth.slice(0,40).filter(v=>v!=null).reverse();
+  const w=140,h=30;
+  const svg = SVG("svg",{width:w,height:h,style:"flex-shrink:0"});
+  svg.appendChild(SVG("line",{x1:0,y1:h-h*0.5,x2:w,y2:h-h*0.5,stroke:st.fg,opacity:0.25,"stroke-dasharray":"3 3"}));
+  if(series.length>1){ let d=""; series.forEach((v,i)=>{ d+=(d?" L ":"M ")+(i/(series.length-1)*w)+" "+(h-(v/100)*h); });
+    svg.appendChild(SVG("polyline",{points:series.map((v,i)=>(i/(series.length-1)*w)+","+(h-(v/100)*h)).join(" "),fill:"none",stroke:st.dot,"stroke-width":1.6})); }
+  const band = $("div",{style:{display:"flex",alignItems:"center",gap:"14px",flexWrap:"wrap",background:st.bg,border:`1px solid ${C.border}`,borderRadius:"10px",padding:"10px 14px",margin:"0 0 12px"}},
+    $("div",{style:{display:"flex",alignItems:"center",gap:"8px"}},
+      $("span",{style:{width:"10px",height:"10px",borderRadius:"5px",background:st.dot,display:"inline-block"}}),
+      $("div",{},
+        $("div",{style:{fontSize:"14px",fontWeight:"600",color:st.fg}}, `地合い：${lbl} `, $("span",{style:{fontSize:"11px",fontWeight:"400"}},arrow)),
+        $("div",{style:{fontSize:"11px",color:st.fg,opacity:"0.85"}}, `25日線上の銘柄 ${M.today!=null?M.today.toFixed(0):"—"}%（ブレッドス）`)
+      )
+    ),
+    svg,
+    $("div",{style:{fontSize:"11.5px",color:st.fg,flex:"1",minWidth:"160px"}}, REGIME_VERDICT[lbl])
+  );
+  root.appendChild(band);
+}
+
+/* ============================================================
+   App
+============================================================ */
+function main(){
+  const app = document.getElementById("app");
+  const header = $("div",{style:{display:"flex",alignItems:"baseline",gap:"10px",margin:"4px 0 10px"}},
+    $("div",{style:{fontSize:"18px",fontWeight:"600"}},"イナゴ・トレード盤"),
+    $("span",{class:"src",style:{background:HAS_REAL?"#e9f3ea":"#fbeede",color:HAS_REAL?"#2a6b3a":"#85500a"}}, HAS_REAL?("実データ"+(RAW.asOf?(" "+RAW.asOf):"")):"デモ（data.js なし）")
+  );
+  app.appendChild(header);
+
+  const tabbar = $("div",{class:"tabbar"});
+  app.appendChild(tabbar);
+  const content = $("div",{});
+  app.appendChild(content);
+  renderRegimeBand(content); // タブの上、常時表示部分の器を先に用意
+  const regimeHolder = content.lastChild;
+  content.removeChild(regimeHolder);
+
+  const tabs = [
+    ["イナゴ個別", renderTool1],
+    ["テーマローテ", renderTool2],
+    ["市場RRG", renderTool3],
+    ["検証", renderTool4],
+    ["新テーマ", renderTool5],
+  ];
+  let active = 0;
+  tabs.forEach(([label], i)=>{
+    const b = $("button",{class:"tab"+(i===0?" on":"")},label);
+    b.addEventListener("click", ()=>{ active=i; renderAll(); });
+    tabbar.appendChild(b);
+  });
+
+  function renderAll(){
+    content.innerHTML="";
+    content.appendChild(regimeHolder.cloneNode(true)); // 簡易的に再利用(静的なのでcloneで十分)
+    [...tabbar.children].forEach((b,i)=>b.classList.toggle("on", i===active));
+    tabs[active][1](content);
+  }
+  renderAll();
+
+  const footer = $("div",{style:{fontSize:"11px",color:C.sub,marginTop:"12px",lineHeight:"1.6"}},
+    "data.js に window.INAGO_DATA があれば実データ、無ければデモで起動。CFG/THEMES/SEGMENTSで調整。これは設計支援であり投資助言ではありません。");
+  app.appendChild(footer);
+}
+main();
+</script>
+</body>
+</html>

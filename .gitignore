@@ -29,6 +29,7 @@ screening_data_*.csv
 public/market_data.csv
 public/market_data_*.csv
 signals/
+inago/data.js
 
 # ローカル設定・ツール
 .claude/
