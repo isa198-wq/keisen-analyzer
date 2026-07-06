@@ -159,7 +159,7 @@ for (const [sym, bars] of groups) {
   const name = ci >= 0 ? sym.slice(ci + 1) : sym;
   const series = buildSeries(tfSeries(bars, "D"));
   const a = analyze(series, "日");
-  const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, close: a.last.close, spark: series.slice(-24).map((b) => b.close) };
+  const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, pattern: a.pattern, close: a.last.close, spark: series.slice(-24).map((b) => b.close) };
   const isBuy = wantAll ? a.vIdx >= 3 : a.vIdx === 4;   // strong: 強い買いのみ / all: 買い系
   const isSell = wantAll ? a.vIdx <= 1 : a.vIdx === 0;  // strong: 強い売りのみ / all: 売り系
   if (isBuy) buys.push(row);
@@ -419,15 +419,22 @@ const scoreCell = (s) => {
   return `<div class="swrap"><span class="sval">${s > 0 ? "+" : ""}${s.toFixed(1)}</span>` +
     `<div class="sbar"><i style="width:${w.toFixed(0)}%;background:${col}"></i></div></div>`;
 };
-// RSIヒート：買われすぎ(>70)=暖色／売られすぎ(<30)=寒色。過熱度を背景＋文字色で可視化。
-const rsiHeat = (v) => {
-  if (v == null || isNaN(v)) return '<span class="rsi" style="color:#56627d">—</span>';
-  let bg = "transparent", fg = "#aab4c6", tag = "";
-  if (v >= 70) { bg = "rgba(224,112,58,.30)"; fg = "#f0a878"; tag = "買われ"; }
-  else if (v >= 60) { bg = "rgba(224,112,58,.15)"; fg = "#e0b090"; }
-  else if (v <= 30) { bg = "rgba(63,143,214,.32)"; fg = "#84baea"; tag = "売られ"; }
-  else if (v <= 40) { bg = "rgba(63,143,214,.16)"; fg = "#9ec2e2"; }
-  return `<span class="rsi" style="background:${bg};color:${fg}">${v.toFixed(0)}${tag ? `<i>${tag}</i>` : ""}</span>`;
+// パターン近さ表示（RSIの代替）：三尊/逆三尊が無ければ「—」、形成中はネックラインまでの距離(%)、
+// 完成済み（ネックライン抜け）は「確定」と表示。色はpatCardと同じ配色（三尊=DOWN／逆三尊=UP）。
+const patText = (r) => {
+  const p = r.pattern;
+  if (!p || (p.kind !== "top" && p.kind !== "inverse")) return null;
+  const label = p.kind === "inverse" ? "逆三尊" : "三尊";
+  if (p.status === "confirmed") return `${label}確定`;
+  const near = p.kind === "top" ? ((r.close - p.neckLevel) / r.close) * 100 : ((p.neckLevel - r.close) / r.close) * 100;
+  return `${label}形成中(あと${Math.max(0, near).toFixed(1)}%)`;
+};
+const patCell = (r) => {
+  const p = r.pattern, t = patText(r);
+  if (!t) return '<span class="rsi" style="color:#56627d">—</span>';
+  const col = p.kind === "inverse" ? UP : DOWN;
+  const bg = p.status === "confirmed" ? (p.kind === "inverse" ? "rgba(239,90,77,.30)" : "rgba(63,143,214,.30)") : "transparent";
+  return `<span class="rsi" style="background:${bg};color:${col}">${t}</span>`;
 };
 // パターン一致マーク：買い×逆三尊、売り×三尊が同じ銘柄に出ている＝方向が重なる参考情報。
 const ALIGN = (r) => (r.patternAligned ? '<span class="align" title="同じ銘柄に方向が一致するパターンあり">◆一致</span>' : "");
@@ -443,7 +450,7 @@ const streakCell = (r, dir) => {
 };
 const tableRows = (rows, dir) => rows.map((r) =>
   `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name} ${ALIGN(r)}${EARN(r)}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
-  `<td>${rsiHeat(r.rsi)}</td>${streakCell(r, dir)}<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
+  `<td>${patCell(r)}</td>${streakCell(r, dir)}<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
 // 三尊/逆三尊：チャート付きの大きめカード
@@ -482,7 +489,7 @@ const cards = (rows, breakWord, kind) => rows.length
   ? `<div class="cards">${rows.map((r) => patCard(r, breakWord, kind)).join("")}</div>`
   : '<p class="muted">該当なし</p>';
 
-const buyTable = (rows, dir) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>RSI</th><th>継続</th><th>推移(24日)</th><th>終値</th></tr>` +
+const buyTable = (rows, dir) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>パターン</th><th>継続</th><th>推移(24日)</th><th>終値</th></tr>` +
   `${tableRows(rows, dir) || '<tr><td colspan=8 class="muted">該当なし</td></tr>'}</table>`;
 
 // ⚠ 張り付き警告（買い/売り表の直前）と 🔚 本日解除（🆕ブロック相当の位置）
@@ -613,7 +620,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 </style>
 <h1>罫線スクリーニング</h1>
 <p class="sub">${today}　／　対象 ${total} 銘柄　／　通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}</p>
-<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip"><span style="color:#f0a878">RSI70+買われすぎ</span>／<span style="color:#84baea">30-売られすぎ</span></span></div>
+<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip">パターン: <span style="color:${DOWN}">三尊</span>／<span style="color:${UP}">逆三尊</span>（形成中はネックまでの距離%、確定はネック抜け済み）</span></div>
 ${marketStrip}
 <div class="stats">
 ${stat("🔴 買いサイン", buys.length, nNew(buys), UP)}
@@ -685,14 +692,14 @@ async function notify() {
   // クラウド(GitHub Actions)では Secret を環境変数で渡す。なければ設定ファイル。
   const lineToken = (process.env.LINE_TOKEN || cfg.line_token || "").trim();
   const url = (process.env.WEBHOOK_URL || cfg.webhook_url || "").trim();
-  // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド RSI / 終値）
+  // レポート形式の本文（1銘柄1行：コード 社名 スコア / トレンド パターン / 終値）
   const shortTrend = (t) => (t.includes("上昇") ? "上昇" : t.includes("下降") ? "下降" : "レンジ");
   // (Nd) = シグナルが N 営業日連続。1日目は🆕が既にあるので付けない。📅 = 決算±7日以内
   const tag = (r) => (r.isNew ? "🆕" : "") + (r.weekly ? "週" : "") + (r.patternAligned ? "◆" : "") + (earningsNear.has(r.code) ? "📅" : "") + (r.days > 1 ? `(${r.days}d)` : "");
   const reportLines = (rows) => {
     const cap = LINE_CAP_LIST;  // 4900字対策のセクション別cap（冒頭の定数を参照）
     const lines = rows.slice(0, cap).map((r) =>
-      `${tag(r)}${r.code} ${r.name} ${r.score > 0 ? "+" : ""}${r.score.toFixed(1)} / ${shortTrend(r.trend)} RSI${r.rsi != null ? r.rsi.toFixed(0) : "-"} / ${fmtPrice(r.close)}`
+      `${tag(r)}${r.code} ${r.name} ${r.score > 0 ? "+" : ""}${r.score.toFixed(1)} / ${shortTrend(r.trend)}${patText(r) ? " " + patText(r) : ""} / ${fmtPrice(r.close)}`
     );
     if (rows.length > cap) lines.push(`…他${rows.length - cap}件（詳細はレポート）`);
     return lines.join("\n") || "なし";
