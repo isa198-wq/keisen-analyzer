@@ -38,6 +38,10 @@ jobs:
       - name: 依存インストール（yfinance / lxml=決算日スクレイプ用）
         run: python -m pip install --quiet yfinance lxml
 
+      # v5フェーズI（disclosure_classify.mjs）が @anthropic-ai/sdk を使うため必要。
+      - name: Node依存インストール
+        run: npm ci
+
       - name: データ取得（指標＋日経225）
         run: |
           python fetch_market.py
@@ -47,6 +51,17 @@ jobs:
       - name: 決算日の更新（決算接近の警告用）
         continue-on-error: true
         run: python fetch_earnings.py
+
+      # v5フェーズI: 適時開示の取得＋分類（前向き蓄積の開始点）。
+      # この段階では screen_daily の出力は一切変えない＝失敗してもスクリーニング自体は継続する。
+      # ANTHROPIC_API_KEY 未設定なら分類はスキップされ、取得のみ行われる（disclosure_classify.mjs内で判定）。
+      - name: 適時開示の取得・分類（AI情報レイヤー・蓄積のみ）
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          node disclosure_fetch.mjs
+          node disclosure_classify.mjs
 
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
