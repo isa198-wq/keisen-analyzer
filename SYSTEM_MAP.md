@@ -122,6 +122,16 @@ run_inago.ps1
 | **git worktree 2件（未削除）** | `.claude/worktrees/heuristic-easley-1fe352`（mainに対しユニークコミット無し＝完全に用済み）、`.claude/worktrees/strange-lovelace-cdcd62`（ユニークコミット3bc5b56は既にcherry-pickされmainにba4fc33として反映済み＝内容的に重複） | どちらも安全に削除可能（`git worktree remove`）。ただし本棚卸しは実装変更をしない方針のため実行はしていない。ユーザー判断で削除推奨 |
 | **監査プロンプト2種** | `Downloads/fable_backtest_audit_prompt.md`(空テンプレ)、`_1.md`(記入済み・実際に使われた版) | テンプレ本体は今後別の監査で再利用可能なので保持でよい。`_1.md`は実行ログとして`inago/監査移植レポート.md`と合わせて保管、または`inago/`直下へ移動して一元化を検討 |
 
+## 4-7. 後続対応（2026-07-06・本棚卸し後に実施）
+
+棚卸し結果を受けて、ユーザー承認のもと以下を実施済み：
+
+- **v5フェーズI（`disclosure_fetch.mjs`/`disclosure_classify.mjs`）をコミット・push**（コミット`08c791a`）。`.github/workflows/daily-screening.yml`・`package.json`等も同時にpush済み。**これでクラウド側にも開示取得・分類ステップが反映される**（分類の実行には引き続き`ANTHROPIC_API_KEY`のGitHub Secret登録が必要、§4-4参照）。
+- **`引継書.md`の「RSI→三尊/逆三尊パターン表記」タスクを実装**（コミット`abde699`）。`screen_daily.mjs`のHTML表・LINE本文ともRSI表記を撤去し、パターンの近さ（形成中は「あと○%」、完成済みは「確定」）を表示するよう変更。golden tests全PASS、実データでの生成確認済み。push済み。
+- 本ドキュメント一式（`SYSTEM_MAP.md`/`ONLINE_SYSTEMS_CHECKLIST.md`/`SYSTEM_INVENTORY_REQUEST.md`）をコミット・push（コミット`4e965de`）。
+- **Downloads配下の明確に重複・破棄済みのイナゴ盤旧ファイルを削除**: `20260705files\inago_daily.html`・`20260705files\run_inago.ps1`（旧run_inago.ps1）・`Downloads\inago_offline.html`（移植前コピー）・`Downloads\inago_daily.html`（閉じタグ欠落・壊れた旧版）・`Downloads\inago_dashboard.html`（同じくさらに旧い壊れた版）の5ファイルを削除。**`detect_clusters.mjs`・`grok_name.py`（未移植機能）と`InagoScannerList.jsx`（孤立プロトタイプ）は判断が割れるため削除せず残置**。
+- **git worktreeの削除は不完全**: `git worktree remove --force`でgitの内部登録（worktree一覧）からは`heuristic-easley-1fe352`・`strange-lovelace-cdcd62`とも除去できたが、物理フォルダ（`.claude/worktrees/`配下）は「別プロセスが使用中」でOSレベルの削除に失敗（おそらくOneDriveの同期プロセスがハンドルを保持）。**フォルダ自体はディスク上にまだ残っている**（gitの管理下からは外れた孤児状態）。OneDriveの同期を一時停止するか、PCを再起動してから手動で`.claude\worktrees\`配下の2フォルダをエクスプローラーで削除することを推奨。ローカルブランチ`claude/heuristic-easley-1fe352`・`claude/strange-lovelace-cdcd62`自体は実害がないため残置（不要なら`git branch -D`で削除可）。
+
 ## 4-6. オンライン側（GAS/Notion/LINE）についての注記
 
 ローカルから確認できたのは以下のみ:
