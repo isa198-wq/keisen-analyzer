@@ -1,4 +1,4 @@
-<#
+﻿<#
   run_inago.ps1 ― イナゴ盤 日次自動化ランナー
   流れ: (1) data.js は build_data_js.mjs で screening_data.csv から生成
         (2) detect_clusters.mjs で点火クラスタ検知 → clusters.json（未実装なら検知スキップ）
