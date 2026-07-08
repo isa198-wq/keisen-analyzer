@@ -34,6 +34,7 @@ const STALE_ADVERSE = 0.03;  // 起点から方向逆行がこの率を超えた
 // 全件はHTMLレポートで見られるため、LINEは各セクション上位のみ（超過分は「…他N件」）。
 const LINE_CAP_LIST = 15;    // 買い/売りリスト 各セクションの最大件数（設計書v2 §5項目4で20→15を事前許容済み）
 const LINE_CAP_PAT = 15;     // 三尊/逆三尊 各セクションの最大件数（行が長いためリストと同数でも約1.6倍重い）
+const LINE_CAP_CLUSTERS = 5; // 新テーマ候補（点火クラスタ）セクションの最大表示クラスタ数
 
 // --- CSV 読み込み（縦持ち: コード:社名, 日付, 始値, 高値, 安値, 終値, 出来高） ---
 if (!fs.existsSync(DATA)) {
@@ -68,6 +69,13 @@ for (const [sym, bars] of groups) {
 if (dataWarnings.length) {
   console.warn(`⚠ データ異常の疑い ${dataWarnings.length}件: ${dataWarnings.slice(0, 5).join(" / ")}${dataWarnings.length > 5 ? " …" : ""}`);
 }
+
+// --- 🔥 イナゴ盤: 新テーマ候補（点火クラスタ）。detect_clusters.mjs が書き出す任意ファイル。
+// 無ければ何も表示しない（依存を壊さない）。Grok命名(cluster_names.js)はローカル専用のためここでは読まない。
+let themeClusters = [];
+try {
+  themeClusters = JSON.parse(fs.readFileSync(new URL("./inago/clusters.json", ROOT), "utf8"));
+} catch { /* 未生成なら非表示 */ }
 
 // --- #5 ミニ・ローソク足チャート（出来高バー＋利確/損切りゾーン＋ネックライン＋価格ラベル） ---
 function miniChart(series, p) {
@@ -632,6 +640,9 @@ ${breadthBar()}
 <div class="regimebar">現在の地合い: <b style="color:${currentRegime === "up" ? GREEN : currentRegime === "down" ? RED : AMBER}">${currentRegime === "up" ? "📈" : currentRegime === "down" ? "📉" : "➡"} ${REGIME_JA[currentRegime]}レジーム</b><span class="muted">（全${total}銘柄の等ウェイト指数 vs 25日線で機械判定）</span></div>
 ${dataWarnings.length ? `<div class="caveat" style="border-left-color:${RED}">🚨 データ異常の疑い ${dataWarnings.length}件（分割未調整・混入の可能性。シグナルが壊れているかも）: ${dataWarnings.slice(0, 5).join(" ／ ")}${dataWarnings.length > 5 ? " …" : ""}</div>` : ""}
 ${removedBlock}
+${themeClusters.length ? `<h2>🔥 新テーマ候補（点火クラスタ・${themeClusters.length}）</h2>
+<p class="muted">出来高急増・株価上昇が同時に起きた銘柄群を相関ベースで機械抽出したもの。テーマの妥当性・エッジは未検証（仮説の一覧）。</p>
+<ul>${themeClusters.map((c, i) => `<li><b>[${String.fromCharCode(65 + i)}]</b> ${c.members.map((m) => `${m.name}(${m.code})`).join("、")}</li>`).join("")}</ul>` : ""}
 <h2>📈 自動答え合わせ（過去シグナルのその後・蓄積${evalDays}営業日）</h2>
 <p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。<br>
 「直近${RECENT_WINDOW}日窓」は答えが出たシグナル日の直近${RECENT_WINDOW}日分（10日後成績は最短でも10日前のシグナルまでしか反映されない構造的ラグあり）。矢印は全期間との比較: ↗改善 ／ →横ばい ／ ↘悪化。</p>
@@ -737,6 +748,12 @@ async function notify() {
     ? ["", `⚠ 外れ続けている張り付き（${staleList.length}）`,
        staleList.map((r) => `${r.side} ${r.code} ${r.name} ${r.days}日目 ${fmtSince(r.sinceRet)}`).join("\n")]
     : [];
+  // 🔥 新テーマ候補（点火クラスタ）。銘柄名のみの短い一覧（詳細はレポート）。未検証の仮説である旨を明記。
+  const clusterLines = themeClusters.length
+    ? ["", `🔥 新テーマ候補（${themeClusters.length}・未検証）`,
+       themeClusters.slice(0, LINE_CAP_CLUSTERS).map((c, i) => `[${String.fromCharCode(65 + i)}] ${c.members.map((m) => m.name).join("、")}`).join("\n") +
+       (themeClusters.length > LINE_CAP_CLUSTERS ? `\n…他${themeClusters.length - LINE_CAP_CLUSTERS}件` : "")]
+    : [];
   // 自動答え合わせの1行サマリ（10日後成績。カッコ内は対市場の優位性）
   const eLine = (cat) => {
     const st = evalStats[cat][10];
@@ -767,6 +784,7 @@ async function notify() {
     ...(dataWarnings.length ? [`🚨 データ異常疑い ${dataWarnings.length}件（レポート参照）`] : []),
     ...newBlock,
     ...removedLines,
+    ...clusterLines,
     "",
     `⛰️ 三尊・天井（${tops.length}）`,
     patLines(tops, "割れ", "▼"),

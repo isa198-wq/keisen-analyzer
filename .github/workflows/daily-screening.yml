@@ -63,6 +63,16 @@ jobs:
           node disclosure_fetch.mjs
           node disclosure_classify.mjs
 
+      # イナゴ盤: 新テーマ候補(点火クラスタ)の検知のみクラウドに相乗り。
+      # screen_daily の通知に短く追記する(下記)。失敗しても本体のスクリーニングは継続。
+      # Grok命名(grok_name.py)はxAI課金・鍵管理が別途必要なためクラウドでは実行しない(ローカル専用)。
+      - name: 新テーマ候補の検知（イナゴ盤・点火クラスタ）
+        continue-on-error: true
+        run: |
+          cd inago
+          node build_data_js.mjs
+          node detect_clusters.mjs data.js
+
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
 
