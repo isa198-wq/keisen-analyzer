@@ -30,6 +30,8 @@ public/market_data.csv
 public/market_data_*.csv
 signals/
 inago/data.js
+inago/clusters.json
+inago/cluster_names.js
 
 # ローカル設定・ツール
 .claude/
