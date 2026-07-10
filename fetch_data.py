@@ -9,14 +9,15 @@ Yahoo Finance(yfinance) から複数銘柄の日足を取得し、keisen-analyze
 
 使い方:
     1. 取得したい銘柄を決める
-       - 同じフォルダに  nikkei225.txt  があれば、その銘柄を自動で取得します
-         （1行1銘柄の4桁コード。日経225の全銘柄が入っています）
-       - nikkei225.txt が無ければ、下の SYMBOLS の銘柄を取得します
+       - 同じフォルダの  nikkei225.txt（日経225）と nasdaq100.txt（ナスダック100）
+         があれば、その銘柄を自動で取得します（1行1銘柄「コード,社名」）
+       - どちらも無ければ、下の SYMBOLS の銘柄を取得します
     2. このフォルダで:  python fetch_data.py   （または「データ取得.bat」をダブルクリック）
     3. 出来た screening_data.csv を、アプリの「データ取込」で読み込む
 
 銘柄を足し引きしたいとき:
-    - nikkei225.txt をメモ帳で開き、コードを足す/消す（# で始まる行はコメント）
+    - nikkei225.txt / nasdaq100.txt をメモ帳で開き、コードを足す/消す（# で始まる行はコメント）
+    - 数字で始まるコード（例 7203, 285A）は東証（.T）、英字のみ（例 AAPL）は米国株として扱います
 """
 
 import csv
@@ -29,24 +30,34 @@ except ImportError:
     print("yfinance が未インストールです。先に:  python -m pip install yfinance", file=sys.stderr)
     sys.exit(1)
 
-# nikkei225.txt が無いときに使う銘柄（日本株: コード.T / 米国株: ティッカー）
+# 銘柄リストが1つも無いときに使う銘柄（日本株: コード.T / 米国株: ティッカー）
 SYMBOLS = [
     "7203.T",  # トヨタ自動車
     "6758.T",  # ソニーグループ
     "9984.T",  # ソフトバンクG
 ]
 
-LIST_FILE = "nikkei225.txt"   # あれば優先して使う銘柄リスト
+LIST_FILES = ["nikkei225.txt", "nasdaq100.txt"]   # あれば優先して使う銘柄リスト（存在するものを全部読む）
 PERIOD = "5y"                  # 取得期間（パターン完成イベントの統計を厚くするため5年。"1y","2y","max" なども可）
 CHUNK = 40                     # 一度にまとめて取得する銘柄数
 OUT_FILE = "screening_data.csv"
 
 
+def to_ticker(code):
+    """コード→Yahooティッカー。数字始まり（7203, 285A など）は東証（.T）、英字は米国株そのまま。"""
+    if "." in code:
+        return code                # 既にサフィックス付き（例 7203.T）はそのまま
+    return code + ".T" if code[:1].isdigit() else code
+
+
 def load_symbols():
-    """nikkei225.txt があればそれを、無ければ SYMBOLS を Yahoo形式で返す。"""
-    if os.path.exists(LIST_FILE):
-        out = []
-        with open(LIST_FILE, encoding="utf-8") as f:
+    """nikkei225.txt / nasdaq100.txt があるものを全部読み、無ければ SYMBOLS を返す。"""
+    out = []
+    for list_file in LIST_FILES:
+        if not os.path.exists(list_file):
+            continue
+        n0 = len(out)
+        with open(list_file, encoding="utf-8") as f:
             for line in f:
                 s = line.strip()
                 if not s or s.startswith("#"):
@@ -54,13 +65,12 @@ def load_symbols():
                 parts = s.split(",", 1)             # "コード,社名"（社名は省略可）
                 code = parts[0].strip()
                 name = parts[1].strip() if len(parts) > 1 else ""
-                ticker = code if "." in code else code + ".T"  # 4桁コードは .T を付与
                 label = f"{code}:{name}" if name else code      # 出力銘柄列は コード:社名
-                out.append((ticker, label))
-        if out:
-            print(f"{LIST_FILE} から {len(out)} 銘柄を読み込みました。")
-            return out
-    print(f"{LIST_FILE} が無いので SYMBOLS（{len(SYMBOLS)}銘柄）を使います。")
+                out.append((to_ticker(code), label))
+        print(f"{list_file} から {len(out) - n0} 銘柄を読み込みました。")
+    if out:
+        return out
+    print(f"銘柄リスト（{' / '.join(LIST_FILES)}）が無いので SYMBOLS（{len(SYMBOLS)}銘柄）を使います。")
     return [(s, s.split(".")[0]) for s in SYMBOLS]
 
 

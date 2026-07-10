@@ -56,9 +56,12 @@ for (const line of text.split(/\r?\n/).slice(1)) {
 
 // --- データ健全性チェック：前日比1.4倍超のジャンプ＝分割未調整・データ混入の疑い ---
 // （2026-06 に auto_adjust=False で分割銘柄の価格が飛び、三尊検出が壊れた事故の再発防止）
+// 直近30営業日だけを見る：米国株は数年前の決算ギャップ（ARM +48% 等）が正当な値動きとして
+// 履歴に残っており、全期間を見ると恒久的に警告が出続けて本物の異常が埋もれるため。
+const SANITY_BARS = 30;
 const dataWarnings = [];
 for (const [sym, bars] of groups) {
-  for (let i = 1; i < bars.length; i++) {
+  for (let i = Math.max(1, bars.length - SANITY_BARS); i < bars.length; i++) {
     const r = bars[i].close / bars[i - 1].close;
     if (r > 1.4 || r < 1 / 1.4) {
       dataWarnings.push(`${sym} ${bars[i].date} 前日比×${r.toFixed(2)}`);

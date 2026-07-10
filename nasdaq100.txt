@@ -1,0 +1,107 @@
+# ナスダック100 構成銘柄（ティッカー,社名）。1行1銘柄。# で始まる行はコメント。
+# 銘柄を足し引きしたい場合はこのファイルを編集して データ取得.bat を実行。
+# 出典: Wikipedia "List of NASDAQ-100 companies"（2026-07-01 の SPCX 追加まで反映）。
+# 注: Alphabet はクラス重複を避けるため GOOGL のみ（GOOG は除外）。
+# 注: 上場直後で日足が30本未満の銘柄（例: SPCX）はデータが溜まるまで自動的にスキップされます。
+AAPL,Apple
+ABNB,Airbnb
+ADBE,Adobe
+ADI,Analog Devices
+ADP,ADP
+ADSK,Autodesk
+AEP,American Electric Power
+ALAB,Astera Labs
+ALNY,Alnylam Pharma
+AMAT,Applied Materials
+AMD,AMD
+AMGN,Amgen
+AMZN,Amazon
+APP,AppLovin
+ARM,Arm Holdings
+ASML,ASML
+AVGO,Broadcom
+AXON,Axon Enterprise
+BKNG,Booking Holdings
+BKR,Baker Hughes
+CCEP,Coca-Cola Europacific
+CDNS,Cadence Design
+CEG,Constellation Energy
+CMCSA,Comcast
+COST,Costco
+CPRT,Copart
+CRWD,CrowdStrike
+CRWV,CoreWeave
+CSCO,Cisco
+CSX,CSX
+CTAS,Cintas
+DASH,DoorDash
+DDOG,Datadog
+DXCM,DexCom
+EA,Electronic Arts
+EXC,Exelon
+FANG,Diamondback Energy
+FAST,Fastenal
+FER,Ferrovial
+FTNT,Fortinet
+GEHC,GE HealthCare
+GILD,Gilead Sciences
+GOOGL,Alphabet
+HON,Honeywell
+# HONA,Honeywell Aerospace  ← 2026-07 時点で yfinance に無い（上場待ち？）。上場を確認したら # を外す
+IDXX,Idexx Labs
+INTC,Intel
+INTU,Intuit
+ISRG,Intuitive Surgical
+KDP,Keurig Dr Pepper
+KHC,Kraft Heinz
+KLAC,KLA
+LIN,Linde
+LITE,Lumentum
+LRCX,Lam Research
+MAR,Marriott
+MCHP,Microchip Tech
+MDLZ,Mondelez
+MELI,MercadoLibre
+META,Meta Platforms
+MNST,Monster Beverage
+MPWR,Monolithic Power
+MRVL,Marvell Tech
+MSFT,Microsoft
+MSTR,MicroStrategy
+MU,Micron
+NBIS,Nebius Group
+NFLX,Netflix
+NVDA,NVIDIA
+NXPI,NXP Semiconductors
+ODFL,Old Dominion Freight
+ORLY,O'Reilly Automotive
+PANW,Palo Alto Networks
+PAYX,Paychex
+PCAR,PACCAR
+PDD,PDD Holdings
+PEP,PepsiCo
+PLTR,Palantir
+PYPL,PayPal
+QCOM,Qualcomm
+REGN,Regeneron
+RKLB,Rocket Lab
+ROP,Roper Tech
+ROST,Ross Stores
+SBUX,Starbucks
+SHOP,Shopify
+SNDK,Sandisk
+SNPS,Synopsys
+SPCX,SpaceX
+STX,Seagate
+TER,Teradyne
+TMUS,T-Mobile US
+TRI,Thomson Reuters
+TSLA,Tesla
+TTWO,Take-Two Interactive
+TXN,Texas Instruments
+VRTX,Vertex Pharma
+WBD,Warner Bros Discovery
+WDAY,Workday
+WDC,Western Digital
+WMT,Walmart
+XEL,Xcel Energy

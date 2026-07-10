@@ -23,16 +23,25 @@ except ImportError:
     print("yfinance が未インストールです。先に:  python -m pip install yfinance", file=sys.stderr)
     sys.exit(1)
 
-LIST_FILE = "nikkei225.txt"
+LIST_FILES = ["nikkei225.txt", "nasdaq100.txt"]
 OUT_FILE = os.path.join("signals", "earnings_dates.json")
 MAX_PER_RUN = 40      # レート制限対策（初回は数日かけて全銘柄が埋まる）
 SLEEP_SEC = 0.2
 
 
+def to_ticker(code):
+    """コード→Yahooティッカー。数字始まりは東証（.T）、英字は米国株そのまま（fetch_data.py と同じ規則）。"""
+    if "." in code:
+        return code
+    return code + ".T" if code[:1].isdigit() else code
+
+
 def load_codes():
     codes = []
-    if os.path.exists(LIST_FILE):
-        with open(LIST_FILE, encoding="utf-8") as f:
+    for list_file in LIST_FILES:
+        if not os.path.exists(list_file):
+            continue
+        with open(list_file, encoding="utf-8") as f:
             for line in f:
                 s = line.strip()
                 if not s or s.startswith("#"):
@@ -44,7 +53,7 @@ def load_codes():
 def main():
     codes = load_codes()
     if not codes:
-        print(f"{LIST_FILE} が見つからないため対象銘柄がありません。", file=sys.stderr)
+        print(f"銘柄リスト（{' / '.join(LIST_FILES)}）が見つからないため対象銘柄がありません。", file=sys.stderr)
         sys.exit(1)
 
     os.makedirs("signals", exist_ok=True)
@@ -64,7 +73,7 @@ def main():
     ok, ng = 0, 0
     for i, code in enumerate(targets, 1):
         try:
-            df = yf.Ticker(f"{code}.T").get_earnings_dates(limit=8)
+            df = yf.Ticker(to_ticker(code)).get_earnings_dates(limit=8)
             new_date = None
             if df is not None and len(df) > 0:
                 ds = sorted(ts.date().isoformat() for ts in df.index)

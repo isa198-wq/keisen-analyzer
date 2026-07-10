@@ -42,7 +42,7 @@ jobs:
       - name: Node依存インストール
         run: npm ci
 
-      - name: データ取得（指標＋日経225）
+      - name: データ取得（指標＋日経225＋ナスダック100）
         run: |
           python fetch_market.py
           python fetch_data.py
