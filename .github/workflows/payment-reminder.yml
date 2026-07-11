@@ -1,0 +1,28 @@
+name: payment-reminder
+
+# カード引落リマインド。毎日 07:45 JST（= 22:45 UTC 前日）に実行し、
+# Notion「月次支払い」DBで引落日が3日前/1日前の行があればLINEに口座別合計を通知する。
+# 必要なSecret: NOTION_TOKEN（Notion内部インテグレーション）、LINE_TOKEN または WEBHOOK_URL（既存を流用）。
+on:
+  schedule:
+    - cron: "45 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: Node セットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: リマインド判定＋通知
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: node payment_reminder.mjs
