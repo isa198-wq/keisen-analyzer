@@ -177,3 +177,14 @@ function analyzeMemo_(text) {
 | 4 | 退役 | `gas/retired/` + ドキュメント更新 | 1 |
 
 各フェーズ完了時に本ファイル末尾へ実施記録(日付・確認結果)を追記すること。
+
+---
+
+## 実施記録
+
+### Phase 0(2026-07-12 実施・ほぼ完了)
+
+- Make②に「Store incomplete executions: Yes」を設定(※UI表記は本設計の「Allow storing of incomplete executions」から変更されている。instantトリガーは1エラーで自動停止、が公式仕様と確認)。
+- Webhook直後にテキストフィルタを追加。ただし初版の「text Exists」条件は**スタンプをすり抜けさせた**(スタンプのキーワードが処理され「笑顔の記録」レコードが生成された)。条件は「`events[].message.type` Equal to `text`」にすること。
+- Difyプロンプトを改善版に差し替え。その際2つの事故: (1)構造化出力ONにしたら出力ノードが`LLM.text`参照のままで空になりMakeの6番パースが「Missing value」で失敗、(2)構造化出力OFFに戻したが【重要指示】(生JSON強制)が抜けておりコードフェンス付き出力で「Source is not valid JSON」失敗→**Makeが2度自動停止**(Store incomplete executionsが当時未保存だったため)。【重要指示】+改行エスケープ指示を再追記して復旧、実メッセージ3件の貫通を確認(2026-07-11 21:52Z)。
+- 残タスク: フィルタ条件を`message.type = text`へ修正後、スタンプ送信でNotionに何も生えないことを確認。
