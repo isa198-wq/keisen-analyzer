@@ -1,13 +1,16 @@
 // カード引落リマインド
 // Notionの「月次支払い」DBを読み、引落日が近い行を口座別に集計してLINEに通知する。
+// あわせて、カードマスタの有効カードごとに「次の支払日」の行がなければ自動作成する
+// （金額空欄・状態=概算。月の途中経過の入力先が常に存在する状態を保つ）。
 // daily-screening と同じ通知経路（LINE_TOKEN=Messaging APIブロードキャスト / WEBHOOK_URL=Make等）を使う。
 //
 // 環境変数:
 //   NOTION_TOKEN        必須。Notion内部インテグレーションのシークレット。
 //                       「カード支払い管理」ページをインテグレーションに共有しておくこと。
-//   NOTION_PAYMENTS_DB  月次支払いDBのdatabase_id（既定: 下記DEFAULT_DB）
+//   NOTION_PAYMENTS_DB  月次支払いDBのdatabase_id（既定: 下記DEFAULT_PAYMENTS_DB）
+//   NOTION_MASTER_DB    カードマスタDBのdatabase_id（既定: 下記DEFAULT_MASTER_DB）
 //   LINE_TOKEN / WEBHOOK_URL  どちらか。両方あればLINE優先（screen_daily.mjsと同じ）。
-//   DRY_RUN=1           送信せず本文をコンソールに出すだけ。
+//   DRY_RUN=1           送信・行作成をせず内容をコンソールに出すだけ。
 //
 // 通知タイミング（毎日実行し、条件に合う日だけ送る）:
 //   - 引落日の3日前: 事前リマインド（残高の準備）
@@ -16,12 +19,20 @@
 //   引落日が10日/25日の3日前なのに未入力（該当行ゼロ）の場合は入力催促を送る。
 
 const NOTION_TOKEN = (process.env.NOTION_TOKEN || "").trim();
-const DEFAULT_DB = "571ad8ef3d6445cf87f3193150166f34"; // 月次支払いDB
-const DB_ID = (process.env.NOTION_PAYMENTS_DB || DEFAULT_DB).trim();
+const DEFAULT_PAYMENTS_DB = "571ad8ef3d6445cf87f3193150166f34"; // 月次支払いDB
+const DEFAULT_MASTER_DB = "eedf9285ab3f4daa825f82e5602bd04a"; // カードマスタDB
+const PAYMENTS_DB = (process.env.NOTION_PAYMENTS_DB || DEFAULT_PAYMENTS_DB).trim();
+const MASTER_DB = (process.env.NOTION_MASTER_DB || DEFAULT_MASTER_DB).trim();
 const LINE_TOKEN = (process.env.LINE_TOKEN || "").trim();
 const WEBHOOK_URL = (process.env.WEBHOOK_URL || "").trim();
 const DRY_RUN = process.env.DRY_RUN === "1";
 const NOTION_PAGE_URL = "https://app.notion.com/p/39a141c2acaa81d2b1d7e37fa5cadb19"; // カード支払い管理
+
+const NOTION_HEADERS = {
+  Authorization: "Bearer " + NOTION_TOKEN,
+  "Notion-Version": "2022-06-28",
+  "Content-Type": "application/json",
+};
 
 // JSTの「今日」（Actionsのランナー=UTCでも正しく動くように明示変換）
 function todayJST() {
@@ -33,35 +44,28 @@ function daysBetween(fromUTC, isoDate) {
   const t = Date.UTC(y, m - 1, d);
   return Math.round((t - fromUTC.getTime()) / 86400000);
 }
+const iso = (dateUTC) => dateUTC.toISOString().slice(0, 10);
 const yen = (n) => "¥" + Math.round(n).toLocaleString("ja-JP");
-const mmdd = (iso) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+const mmdd = (s) => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
 
-async function queryPayments() {
+async function notionQuery(dbId, filter) {
   const rows = [];
   let cursor = undefined;
   do {
-    const res = await fetch(`https://api.notion.com/v1/databases/${DB_ID}/query`, {
+    const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
       method: "POST",
-      headers: {
-        Authorization: "Bearer " + NOTION_TOKEN,
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        page_size: 100,
-        start_cursor: cursor,
-        filter: { property: "残高確認済", checkbox: { equals: false } },
-      }),
+      headers: NOTION_HEADERS,
+      body: JSON.stringify({ page_size: 100, start_cursor: cursor, ...(filter ? { filter } : {}) }),
     });
-    if (!res.ok) throw new Error(`Notion query失敗: HTTP ${res.status} ${await res.text()}`);
+    if (!res.ok) throw new Error(`Notion query失敗(${dbId}): HTTP ${res.status} ${await res.text()}`);
     const data = await res.json();
     rows.push(...data.results);
     cursor = data.has_more ? data.next_cursor : undefined;
   } while (cursor);
-  return rows.map(parseRow).filter(Boolean);
+  return rows;
 }
 
-function parseRow(page) {
+function parsePaymentRow(page) {
   const p = page.properties || {};
   const date = p["引落日"]?.date?.start;
   if (!date) return null;
@@ -72,6 +76,66 @@ function parseRow(page) {
   const roll = p["引落口座"]?.rollup?.array || [];
   const account = roll.map((r) => r.select?.name).filter(Boolean)[0] || "口座不明";
   return { title, date, amount, status, account };
+}
+
+// --- 翌サイクル行の自動作成 ---
+// 有効カードごとに「次に来る支払日（10日/25日）」の行が月次支払いに存在するか確認し、なければ作る。
+// 既存判定は「同じカードへのrelation かつ 引落日が同じ年月」（振替日が休日ずれで手修正されていても一致する）。
+async function ensureNextCycleRows(today) {
+  const masters = await notionQuery(MASTER_DB, { property: "有効", checkbox: { equals: true } });
+  const upcoming = await notionQuery(PAYMENTS_DB, {
+    property: "引落日",
+    date: { on_or_after: iso(new Date(today.getTime() - 27 * 86400000)) }, // 当月分も既存判定に含める
+  });
+  let created = 0;
+  for (const card of masters) {
+    const p = card.properties || {};
+    const name = (p["カード名"]?.title || []).map((t) => t.plain_text).join("") || "(カード名未設定)";
+    const payDaySel = p["支払日"]?.select?.name || "";
+    const m = payDaySel.match(/^(\d+)日$/);
+    if (!m) {
+      console.log(`行自動作成スキップ（支払日「${payDaySel || "未設定"}」は日付を特定できない）: ${name}`);
+      continue;
+    }
+    const day = Number(m[1]);
+    // 次に来る支払日: 今日がその日以降なら翌月
+    const y = today.getUTCFullYear();
+    const mo = today.getUTCMonth();
+    const target =
+      today.getUTCDate() < day ? new Date(Date.UTC(y, mo, day)) : new Date(Date.UTC(y, mo + 1, day));
+    const targetIso = iso(target);
+    const targetYM = targetIso.slice(0, 7);
+    const exists = upcoming.some((row) => {
+      const rel = (row.properties?.["カード"]?.relation || []).map((r) => r.id);
+      const d = row.properties?.["引落日"]?.date?.start || "";
+      return rel.includes(card.id) && d.slice(0, 7) === targetYM;
+    });
+    if (exists) continue;
+    if (DRY_RUN) {
+      console.log(`DRY_RUN: 行を作成する想定 → ${targetYM} ${name}（引落日 ${targetIso}）`);
+      continue;
+    }
+    const res = await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers: NOTION_HEADERS,
+      body: JSON.stringify({
+        parent: { database_id: PAYMENTS_DB },
+        properties: {
+          名前: { title: [{ text: { content: `${targetYM} ${name}` } }] },
+          カード: { relation: [{ id: card.id }] },
+          引落日: { date: { start: targetIso } },
+          状態: { select: { name: "概算" } },
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.error(`行の自動作成に失敗（${name}）: HTTP ${res.status} ${await res.text()}`);
+      continue;
+    }
+    created++;
+    console.log(`行を自動作成: ${targetYM} ${name}（引落日 ${targetIso}）`);
+  }
+  if (created === 0) console.log("翌サイクル行: すべて存在（作成なし）。");
 }
 
 function buildMessage(due, daysUntil) {
@@ -130,7 +194,17 @@ async function main() {
     return;
   }
   const today = todayJST();
-  const rows = await queryPayments();
+
+  // 行の自動作成に失敗してもリマインド本体は続行する
+  try {
+    await ensureNextCycleRows(today);
+  } catch (e) {
+    console.error("翌サイクル行の自動作成でエラー（リマインドは継続）:", e);
+  }
+
+  const rows = (await notionQuery(PAYMENTS_DB, { property: "残高確認済", checkbox: { equals: false } }))
+    .map(parsePaymentRow)
+    .filter(Boolean);
   console.log(`未確認の支払い行: ${rows.length}件`);
 
   // 3日前と1日前だけ通知（毎日送ってスパムにならないように）
@@ -143,6 +217,7 @@ async function main() {
   }
 
   // 定例支払日（10日・25日）が3日後なのに1行も入力がない場合は催促
+  // （行の自動作成が動いていれば通常ここには来ない。作成失敗時のセーフティネット）
   const ahead3 = new Date(today.getTime() + 3 * 86400000);
   const day = ahead3.getUTCDate();
   if (day === 10 || day === 25) {
