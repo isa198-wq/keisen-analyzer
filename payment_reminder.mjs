@@ -208,8 +208,9 @@ async function main() {
   console.log(`未確認の支払い行: ${rows.length}件`);
 
   // 3日前と1日前だけ通知（毎日送ってスパムにならないように）
+  // 状態=スキップの行はメッセージに出さない（存在自体は anyThisDate 側で「入力済み」扱いのまま）
   for (const daysUntil of [3, 1]) {
-    const due = rows.filter((r) => daysBetween(today, r.date) === daysUntil);
+    const due = rows.filter((r) => daysBetween(today, r.date) === daysUntil && r.status !== "スキップ");
     if (due.length > 0) {
       await send(buildMessage(due, daysUntil));
       return;
