@@ -21,16 +21,74 @@ const KAYUMI_LOG_DATA_SOURCE_ID = '5d55acd6-a2e9-4704-acae-f1f522b60f15';
 const KAYUMI_ENV_DATA_SOURCE_ID = 'be0ea889-536b-4d9e-a87d-fb2987787869';
 const KAYUMI_GEOCACHE_DATA_SOURCE_ID = 'f5777d0c-ae0c-4a9f-b411-6996cce1b2d2';
 
+/**
+ * Open-Meteo Geocoding APIは漢字・かな地名にマッチしないため（language=jaは出力言語のみに影響し、
+ * 検索は英語/ローマ字名でしか通らない。実機確認済み）、主要地名→ローマ字の変換表を用意する。
+ * 未登録の地名はそのままAPIへ渡す（ローマ字入力や国際的に通じる地名はこれで通る）。
+ */
+const KAYUMI_JP_PLACE_ROMAJI = {
+  '北海道': 'Sapporo', '札幌': 'Sapporo',
+  '青森': 'Aomori',
+  '岩手': 'Morioka', '盛岡': 'Morioka',
+  '宮城': 'Sendai', '仙台': 'Sendai',
+  '秋田': 'Akita',
+  '山形': 'Yamagata',
+  '福島': 'Fukushima',
+  '茨城': 'Mito', '水戸': 'Mito',
+  '栃木': 'Utsunomiya', '宇都宮': 'Utsunomiya',
+  '群馬': 'Maebashi', '前橋': 'Maebashi',
+  '埼玉': 'Saitama', 'さいたま': 'Saitama',
+  '千葉': 'Chiba',
+  '東京': 'Tokyo',
+  '神奈川': 'Yokohama', '横浜': 'Yokohama', '川崎': 'Kawasaki',
+  '新潟': 'Niigata',
+  '富山': 'Toyama',
+  '石川': 'Kanazawa', '金沢': 'Kanazawa',
+  '福井': 'Fukui',
+  '山梨': 'Kofu', '甲府': 'Kofu',
+  '長野': 'Nagano',
+  '岐阜': 'Gifu',
+  '静岡': 'Shizuoka',
+  '愛知': 'Nagoya', '名古屋': 'Nagoya',
+  '三重': 'Tsu',
+  '滋賀': 'Otsu', '大津': 'Otsu',
+  '京都': 'Kyoto',
+  '大阪': 'Osaka',
+  '兵庫': 'Kobe', '神戸': 'Kobe',
+  '奈良': 'Nara',
+  '和歌山': 'Wakayama',
+  '鳥取': 'Tottori',
+  '島根': 'Matsue', '松江': 'Matsue',
+  '岡山': 'Okayama',
+  '広島': 'Hiroshima',
+  '山口': 'Yamaguchi',
+  '徳島': 'Tokushima',
+  '香川': 'Takamatsu', '高松': 'Takamatsu',
+  '愛媛': 'Matsuyama', '松山': 'Matsuyama',
+  '高知': 'Kochi',
+  '福岡': 'Fukuoka', '北九州': 'Kitakyushu',
+  '佐賀': 'Saga',
+  '長崎': 'Nagasaki',
+  '熊本': 'Kumamoto',
+  '大分': 'Oita',
+  '宮崎': 'Miyazaki',
+  '鹿児島': 'Kagoshima',
+  '沖縄': 'Naha', '那覇': 'Naha',
+  '堺': 'Sakai'
+};
+
 /** memo.gsのhandleLineEvent_から呼ばれるエントリポイント。 */
 function handleKayumiEvent_(event, text) {
   const replyToken = event.replyToken;
   const parsed = parseKayumiMessage_(text);
 
   let location = KAYUMI_DEFAULT_LOCATION;
+  let locationFailed = false;
   try {
     location = resolveLocation_(parsed.locationName);
   } catch (err) {
     notifyError_('resolveLocation_', err);
+    locationFailed = !!parsed.locationName;
   }
 
   let env = {};
@@ -48,8 +106,9 @@ function handleKayumiEvent_(event, text) {
     return;
   }
 
+  const failNote = locationFailed ? '(「' + parsed.locationName + '」の場所が特定できず既定地点で記録)' : '';
   try {
-    lineReply_(replyToken, '記録しました(強度' + parsed.intensity + '・' + location.name + ')');
+    lineReply_(replyToken, '記録しました(強度' + parsed.intensity + '・' + location.name + ')' + failNote);
   } catch (e2) {
     // replyToken失効（再送等）は握りつぶす。Notionには保存済みなのでデータ欠落なし
   }
@@ -133,7 +192,8 @@ function saveGeocache_(name, lat, lon) {
 }
 
 function geocode_(name) {
-  const url = 'https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(name) + '&language=ja&count=1';
+  const query = KAYUMI_JP_PLACE_ROMAJI[name] || name;
+  const url = 'https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(query) + '&count=1&countryCode=JP';
   const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) {
     throw new Error('Geocoding API ' + res.getResponseCode());
