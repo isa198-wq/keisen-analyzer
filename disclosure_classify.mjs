@@ -1,19 +1,24 @@
-// v5フェーズI-2: 適時開示の分類（Claude Haiku 4.5・構造化出力）
+// v5フェーズI-2: 適時開示の分類（Gemini・Vertex AI経由・構造化出力）
 //   disclosure_fetch.mjs が貯めた signals/disclosures.jsonl のうち未分類レコードに
 //   cls:{kind,surprise,confidence,oneLine,model,classifiedAt} を付与する。
 //   分類は開示当日の情報（タイトル）のみを見る。将来リターンは一切参照しない
 //   （フェーズJで分類ノイズと本物のエッジを区別するため、ここでの未来参照は致命的）。
 //   非決定性対策: 一度 cls が付いたレコードは再分類しない（初回結果を確定として保存）。
-//   ANTHROPIC_API_KEY が無い環境では分類をスキップし、取得だけの状態のままジョブを継続する。
+//   VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が無い環境では分類をスキップし、
+//   取得だけの状態のままジョブを継続する。
+//   認証はサービスアカウント(GOOGLE_APPLICATION_CREDENTIALS)によるApplication Default
+//   Credentials。Anthropic版からの移行(2026-07-14、Dify等で使えているVertex AIのクレジットを
+//   活用するため)。
 // 使い方: node disclosure_classify.mjs
 import fs from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 
 const ROOT = new URL(".", import.meta.url);
 const OUT = new URL("./signals/disclosures.jsonl", ROOT);
-// 分類は高頻度・低難度なので claude-haiku-4-5 を使う（v5§2）。要約や曖昧判断が要る箇所のみ
-// opus検討だが、本スキーマは固定enum＋短文要約でhaikuで十分なため本実装では使わない。
-const MODEL = "claude-haiku-4-5";
+// 分類は高頻度・低難度なのでflash系モデルを使う。要約や曖昧判断が要る箇所のみ上位モデル検討だが、
+// 本スキーマは固定enum＋短文要約でflashで十分なため本実装では使わない。
+const MODEL = "gemini-2.0-flash-001";
+const LOCATION = process.env.VERTEX_AI_LOCATION || "us-central1";
 
 const SCHEMA = {
   type: "object",
@@ -24,7 +29,6 @@ const SCHEMA = {
     oneLine: { type: "string" },
   },
   required: ["kind", "surprise", "confidence", "oneLine"],
-  additionalProperties: false,
 };
 
 function loadRecords() {
@@ -42,20 +46,30 @@ function saveRecords(records) {
 }
 
 async function classifyOne(client, record) {
-  const res = await client.messages.create({
+  const res = await client.models.generateContent({
     model: MODEL,
-    max_tokens: 512,
-    system: "あなたは日本の適時開示（TDnet）のタイトルを分類するアナリストです。開示当日に一般公開されている情報だけから判断し、将来の株価やリターンには一切言及しないでください。",
-    output_config: {
-      format: { type: "json_schema", schema: SCHEMA },
-    },
-    messages: [{
+    contents: [{
       role: "user",
-      content: `次の適時開示タイトルを分類してください。\n銘柄コード: ${record.code}\nタイトル: ${record.title}`,
+      parts: [{
+        text: `次の適時開示タイトルを分類してください。\n銘柄コード: ${record.code}\nタイトル: ${record.title}`,
+      }],
     }],
+    config: {
+      systemInstruction: "あなたは日本の適時開示（TDnet）のタイトルを分類するアナリストです。開示当日に一般公開されている情報だけから判断し、将来の株価やリターンには一切言及しないでください。",
+      responseMimeType: "application/json",
+      responseSchema: SCHEMA,
+    },
   });
-  if (res.stop_reason === "refusal") throw new Error("モデルが分類を拒否しました");
-  const text = res.content.find((b) => b.type === "text")?.text;
+
+  const candidate = res.candidates?.[0];
+  if (!candidate) {
+    const blockReason = res.promptFeedback?.blockReason;
+    throw new Error(`Geminiから応答がありません（blockReason: ${blockReason || "不明"}）`);
+  }
+  if (candidate.finishReason && candidate.finishReason !== "STOP") {
+    throw new Error(`モデルが分類を拒否/中断しました（finishReason: ${candidate.finishReason}）`);
+  }
+  const text = candidate.content?.parts?.find((p) => p.text)?.text;
   if (!text) throw new Error("テキスト応答がありません");
   const parsed = JSON.parse(text);
   return {
@@ -69,9 +83,10 @@ async function classifyOne(client, record) {
 }
 
 async function main() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.log("ANTHROPIC_API_KEY が未設定のため分類をスキップしました（取得のみ・ジョブは継続）。");
+  const projectId = process.env.VERTEX_AI_PROJECT_ID;
+  const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!projectId || !credsPath) {
+    console.log("VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が未設定のため分類をスキップしました（取得のみ・ジョブは継続）。");
     return;
   }
   const records = loadRecords();
@@ -81,7 +96,7 @@ async function main() {
     return;
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new GoogleGenAI({ vertexai: true, project: projectId, location: LOCATION });
   let ok = 0, ng = 0;
   for (const record of targets) {
     try {
