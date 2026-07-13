@@ -87,13 +87,13 @@ function resolveLocation_(name) {
 
 function queryGeocache_(name) {
   const notionToken = PropertiesService.getScriptProperties().getProperty('NOTION_TOKEN');
-  const res = UrlFetchApp.fetch('https://api.notion.com/v1/databases/' + KAYUMI_GEOCACHE_DATA_SOURCE_ID + '/query', {
+  const res = UrlFetchApp.fetch('https://api.notion.com/v1/data_sources/' + KAYUMI_GEOCACHE_DATA_SOURCE_ID + '/query', {
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
     headers: {
       Authorization: 'Bearer ' + notionToken,
-      'Notion-Version': '2022-06-28'
+      'Notion-Version': '2025-09-03'
     },
     payload: JSON.stringify({
       filter: { property: '地名', title: { equals: name } },
@@ -299,13 +299,13 @@ function average_(arr) {
 /** 「環境ログ」の直前行(指定日より前で最新)を取得し、前日比計算に使う。 */
 function fetchPreviousEnvLogRow_(beforeDateStr) {
   const notionToken = PropertiesService.getScriptProperties().getProperty('NOTION_TOKEN');
-  const res = UrlFetchApp.fetch('https://api.notion.com/v1/databases/' + KAYUMI_ENV_DATA_SOURCE_ID + '/query', {
+  const res = UrlFetchApp.fetch('https://api.notion.com/v1/data_sources/' + KAYUMI_ENV_DATA_SOURCE_ID + '/query', {
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
     headers: {
       Authorization: 'Bearer ' + notionToken,
-      'Notion-Version': '2022-06-28'
+      'Notion-Version': '2025-09-03'
     },
     payload: JSON.stringify({
       filter: { property: '日付', date: { before: beforeDateStr } },
