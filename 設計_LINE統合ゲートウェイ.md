@@ -215,3 +215,15 @@ Phase 2完了後の拡張(Phase 2.5)として実装するのが低リスク:
 - `testSend()`を手動実行しLINE着信を確認(本人確認済み)。
 - 既存デプロイを「編集」→バージョン2として更新(URLは不変、週報中継の設定は無傷)。
 - 気になりメモ(`handleLineWebhook_`)とかゆみ記録はまだ未実装のため、LINE Webhook側の実処理は次のPhaseまで動作しない(想定どおり)。Make②はまだOFFにせず稼働中のまま。
+
+### Phase 2 + かゆみ記録拡張(2026-07-13 実施・コード反映完了、認証情報設定待ち)
+
+- `gas/memo.gs`（気になりメモ移設）と`gas/kayumi.gs`（かゆみ記録+環境ログ日次バッチ、当初計画のPhase 3拡張分）を同時に実装し、GASエディタへ反映・デプロイ（バージョン3、URL不変）まで完了。
+- Notion側は「記録」ページ配下に新規3DB作成済み: かゆみログ(`5d55acd6-a2e9-4704-acae-f1f522b60f15`)/環境ログ(`be0ea889-536b-4d9e-a87d-fb2987787869`)/かゆみ地名キャッシュ(`f5777d0c-ae0c-4a9f-b411-6996cce1b2d2`)。
+- mydbのプロパティは全てtext型（名前のみtitle）と判明したため、design doc記載のselect想定から実装時にrich_textへ修正。
+- **未完了（本人作業待ち）**:
+  1. スクリプトプロパティ`ANTHROPIC_API_KEY`・`NOTION_TOKEN`の設定（Claudeは実際のAPIキー/トークンを代理入力しない方針のため、本人がGAS設定画面で入力）
+  2. Notion内部インテグレーションの作成、対象DB（mydb/かゆみログ/環境ログ/かゆみ地名キャッシュ）への接続
+  3. `installDailyTrigger()`実行（ScriptAppの新規OAuth権限承認が必要で中断中）
+  4. 上記完了後、LINE Developers ConsoleでWebhook URLをMake②からゲートウェイへ切替、実メッセージでの貫通確認
+  5. 確認後Make②をOFF（削除はしない）
