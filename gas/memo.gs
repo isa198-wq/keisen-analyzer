@@ -9,8 +9,11 @@
  * 前提:
  *  - Notion側で内部インテグレーションを作成し、「mydb」ページに接続しておくこと。
  *    トークンはスクリプトプロパティ NOTION_TOKEN へ。
- *  - AI分類はGemini API（無料枠）を使用。スクリプトプロパティ GEMINI_API_KEY に
- *    Google AI StudioのAPIキーを設定すること。
+ *
+ * AI分類（Gemini）は2026-07-13時点で保留中（Google Cloud側の課金設定の問題でAPIが
+ * 使えないため）。analyzeMemo_は残してあるが呼んでいない。原文はAI解析なしでそのまま
+ * Notionに保存し、LINEには「記録しました」とだけ返す。課金問題解決後、
+ * handleMemoEvent_内のコメントを参照して再度analyzeMemo_を呼ぶよう戻せる。
  */
 
 const MEMO_NOTION_DATA_SOURCE_ID = '35c141c2-acaa-80d6-9cd9-000b0c20a5a8';
@@ -48,16 +51,8 @@ function handleLineEvent_(event) {
 
 function handleMemoEvent_(event, text) {
   const replyToken = event.replyToken;
-  let analysis;
-  let aiFailed = false;
-
-  try {
-    analysis = analyzeMemo_(text);
-  } catch (err) {
-    notifyError_('analyzeMemo_', err);
-    aiFailed = true;
-    analysis = { title: text.slice(0, 15), category: '', reply: '' };
-  }
+  // AI分類は保留中（ファイル冒頭コメント参照）。再開する場合はここをanalyzeMemo_呼び出しに戻す。
+  const analysis = { title: text.slice(0, 15), category: '', reply: '' };
 
   try {
     writeMemoToNotion_(text, analysis);
@@ -67,9 +62,8 @@ function handleMemoEvent_(event, text) {
     return;
   }
 
-  const replyText = aiFailed ? '保存しました(AI解析は失敗)' : analysis.reply;
   try {
-    lineReply_(replyToken, replyText);
+    lineReply_(replyToken, '記録しました');
   } catch (e2) {
     // replyToken失効（再送等）は握りつぶす。Notionには保存済みなのでデータ欠落なし
   }
