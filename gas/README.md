@@ -11,7 +11,7 @@
 | ファイル | 役割 |
 |---|---|
 | `gateway.gs` | doPostルータ本体。ルーティン中継（週報用）とLINE Webhookの振り分け、共通ユーティリティ（linePush_/lineReply_/notifyError_）。 |
-| `memo.gs` | 気になりメモ（LINE→Claude分類→Notion mydb→LINE返信）。Phase 2で追加。テキスト先頭が「かゆい」ならkayumi.gsへ委譲。 |
+| `memo.gs` | 気になりメモ（LINE→Gemini分類→Notion mydb→LINE返信）。Phase 2で追加。テキスト先頭が「かゆい」ならkayumi.gsへ委譲。 |
 | `kayumi.gs` | かゆみ記録・環境ログ日次バッチ。Phase 3（拡張）で追加。 |
 
 ## デプロイ手順
@@ -30,12 +30,12 @@
 | `LINE_USER_ID` | 送信先（自分）のユーザーID | 既存 |
 | `SHARED_SECRET` | ルーティン中継の簡易認証文字列 | 既存 |
 | `LINE_HOOK_TOKEN` | LINE Webhook URLに付与するクエリトークン（`?token=...`） | Phase 1で新規追加。ランダム文字列を自分で決めてよい |
-| `ANTHROPIC_API_KEY` | Claude Messages API呼び出し用 | Phase 2で新規追加 |
+| `GEMINI_API_KEY` | Gemini API（無料枠）呼び出し用 | Phase 2で新規追加。[Google AI Studio](https://aistudio.google.com/apikey)でキー発行。モデルは`memo.gs`内の`GEMINI_MODEL`定数（既定`gemini-2.0-flash`）を編集すれば変更可能 |
 | `NOTION_TOKEN` | Notion API書き込み用（内部インテグレーション） | Phase 2で新規追加。Notion側で作成した内部インテグレーションを、対象ページ・DB（「mydb」「かゆみログ」「環境ログ」「かゆみ地名キャッシュ」、いずれも「記録」ページ配下）に接続すること |
 
 キーの値そのものはこのリポジトリに書かない。
 
-**注意**: `ANTHROPIC_API_KEY` と `NOTION_TOKEN` は実際のAPIキー/アクセストークンなので、Claudeに代わりに入力させず、必ずご自身でGASのスクリプトプロパティ画面に入力すること。
+**注意**: `GEMINI_API_KEY` と `NOTION_TOKEN` は実際のAPIキー/アクセストークンなので、Claudeに代わりに入力させず、必ずご自身でGASのスクリプトプロパティ画面に入力すること。
 
 ## Notionオブジェクト（Phase 3で作成済み）
 

@@ -1,16 +1,20 @@
 /**
- * 気になりメモ（LINE → Claude分類 → Notion「mydb」→ LINE返信）
+ * 気になりメモ（LINE → Gemini分類 → Notion「mydb」→ LINE返信）
  * -------------------------------------------------
  * gateway.gsのdoPostルータから、LINE Webhookイベント（body.destination + body.events）
  * を受け取ったときに呼ばれる。テキスト以外・空文字のメッセージは黙ってスキップする
  * （2026-06-26に非テキストメッセージ流入でMakeシナリオが自動停止した事故の再発防止点）。
  * 先頭が「かゆい」のメッセージは kayumi.gs のかゆみ記録ハンドラへ委譲する。
  *
- * 前提: Notion側で内部インテグレーションを作成し、「mydb」ページに接続しておくこと。
- * トークンはスクリプトプロパティ NOTION_TOKEN へ。
+ * 前提:
+ *  - Notion側で内部インテグレーションを作成し、「mydb」ページに接続しておくこと。
+ *    トークンはスクリプトプロパティ NOTION_TOKEN へ。
+ *  - AI分類はGemini API（無料枠）を使用。スクリプトプロパティ GEMINI_API_KEY に
+ *    Google AI StudioのAPIキーを設定すること。
  */
 
 const MEMO_NOTION_DATA_SOURCE_ID = '35c141c2-acaa-80d6-9cd9-000b0c20a5a8';
+const GEMINI_MODEL = 'gemini-2.0-flash';
 
 /** gateway.gsのdoPostルータから呼ばれるLINE Webhookのエントリポイント。 */
 function handleLineWebhook_(body) {
@@ -71,7 +75,7 @@ function handleMemoEvent_(event, text) {
   }
 }
 
-/** Claude Messages APIを1コールし、メモを分類+短い返信文を生成する。 */
+/** Gemini APIを1コールし、メモを分類+短い返信文を生成する。 */
 function analyzeMemo_(text) {
   const schema = {
     type: 'object',
@@ -80,33 +84,36 @@ function analyzeMemo_(text) {
       category: { type: 'string', enum: ['メモ系', '日記系', '英語系'] },
       reply: { type: 'string', description: 'LINEで返す2文以内の短い応答。共感or一言アドバイス。' }
     },
-    required: ['title', 'category', 'reply'],
-    additionalProperties: false
+    required: ['title', 'category', 'reply']
   };
-  const res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+  const res = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
-    headers: {
-      'x-api-key': PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY'),
-      'anthropic-version': '2023-06-01'
-    },
     payload: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: 'あなたはLINEで送られた個人メモの整理係。日本語で簡潔に。',
-      messages: [{ role: 'user', content: 'このメモを整理して: ' + text }],
-      output_config: { format: { type: 'json_schema', schema: schema } }
+      systemInstruction: { parts: [{ text: 'あなたはLINEで送られた個人メモの整理係。日本語で簡潔に。' }] },
+      contents: [{ role: 'user', parts: [{ text: 'このメモを整理して: ' + text }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: schema
+      }
     })
   });
   if (res.getResponseCode() !== 200) {
-    throw new Error('Claude API ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 300));
+    throw new Error('Gemini API ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 300));
   }
-  const msg = JSON.parse(res.getContentText());
-  if (msg.stop_reason === 'refusal') {
-    throw new Error('Claude refusal');
+  const data = JSON.parse(res.getContentText());
+  const candidate = data.candidates && data.candidates[0];
+  if (!candidate) {
+    const blockReason = data.promptFeedback && data.promptFeedback.blockReason;
+    throw new Error('Gemini blocked: ' + (blockReason || 'no candidates'));
   }
-  return JSON.parse(msg.content.find(function (b) { return b.type === 'text'; }).text);
+  if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+    throw new Error('Gemini finishReason: ' + candidate.finishReason);
+  }
+  return JSON.parse(candidate.content.parts[0].text);
 }
 
 /** Notion「mydb」（新規データベース）へ1件書き込む。全プロパティtext型（名前のみtitle）。 */

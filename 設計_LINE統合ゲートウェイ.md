@@ -227,3 +227,5 @@ Phase 2完了後の拡張(Phase 2.5)として実装するのが低リスク:
   3. `installDailyTrigger()`実行（ScriptAppの新規OAuth権限承認が必要で中断中）
   4. 上記完了後、LINE Developers ConsoleでWebhook URLをMake②からゲートウェイへ切替、実メッセージでの貫通確認
   5. 確認後Make②をOFF（削除はしない）
+
+- **2026-07-13追記**: AI分類はAnthropic Claude Haikuではなく**Gemini API（無料枠）**を使う方針に変更（本人希望、コスト回避）。`memo.gs`の`analyzeMemo_`をGemini `generateContent`エンドポイント呼び出しに書き換え済み。スクリプトプロパティは`ANTHROPIC_API_KEY`ではなく`GEMINI_API_KEY`（Google AI Studio発行）。モデルは`GEMINI_MODEL`定数（既定`gemini-2.0-flash`）。
