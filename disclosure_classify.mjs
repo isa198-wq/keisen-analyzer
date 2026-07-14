@@ -15,9 +15,9 @@ import { GoogleGenAI } from "@google/genai";
 
 const ROOT = new URL(".", import.meta.url);
 const OUT = new URL("./signals/disclosures.jsonl", ROOT);
-// 分類は高頻度・低難度なのでflash系モデルを使う。要約や曖昧判断が要る箇所のみ上位モデル検討だが、
-// 本スキーマは固定enum＋短文要約でflashで十分なため本実装では使わない。
-const MODEL = "gemini-2.0-flash-001";
+// モデル名はDifyの「時刻表2」ワークフローで実際に動作確認済みの"Gemini 2.5 Pro"に合わせる
+// （このGoogle Cloudプロジェクト/リージョンでは gemini-2.0-flash-001 が404で使えなかったため）。
+const MODEL = "gemini-2.5-pro";
 const LOCATION = process.env.VERTEX_AI_LOCATION || "us-central1";
 
 const SCHEMA = {
