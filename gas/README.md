@@ -13,6 +13,7 @@
 | `gateway.gs` | doPostルータ本体。ルーティン中継（週報用）とLINE Webhookの振り分け、共通ユーティリティ（linePush_/lineReply_/notifyError_）。 |
 | `memo.gs` | 気になりメモ（LINE→Vertex AI Gemini分類→Notion mydb→LINE返信）。Phase 2で追加。テキスト先頭が「かゆい」ならkayumi.gsへ委譲。 |
 | `kayumi.gs` | かゆみ記録・環境ログ日次バッチ。Phase 3（拡張）で追加。 |
+| `points.gs` | ポイント失効管理の日次バッチ。「ポイント管理」DBを読み、失効間近レコードをLINEにまとめてpush。 |
 
 ## デプロイ手順
 
@@ -46,11 +47,19 @@
 | かゆみログ | `5d55acd6-a2e9-4704-acae-f1f522b60f15` |
 | 環境ログ | `be0ea889-536b-4d9e-a87d-fb2987787869` |
 | かゆみ地名キャッシュ | `f5777d0c-ae0c-4a9f-b411-6996cce1b2d2` |
+| ポイント管理 | `c0591366-1dc4-4d84-9d7a-88b34654f3a9` |
+
+「ポイント管理」DBはNotion内部インテグレーションの接続先に追加しておくこと（NOTION_TOKENは既存を流用）。
 
 ## 日次バッチトリガーの設置（Phase 3で実施）
 
 `kayumi.gs`貼り付け後、スクリプトエディタで`installDailyTrigger`を選択して一度手動実行する。
 毎朝7:00 JSTに`recordDailyEnvironmentSummary_`が走り、前日の堺市環境サマリーを「環境ログ」に記録する。
+
+`points.gs`貼り付け後、スクリプトエディタで`installPointsDailyTrigger`を選択して一度手動実行する。
+毎朝8:00 JSTに`checkPointsExpiry_`が走り、失効間近（30日以内/7日以内）のポイントをLINEにまとめて通知する
+（該当なしの日は何も送らない）。テストは`testCheckPointsExpiry`を手動実行、または「ポイント管理」DBの
+いずれかのレコードの失効日を数日後に設定してから実行して確認する。
 
 ## LINE Webhook URLの切り替え（Phase 2で実施）
 
