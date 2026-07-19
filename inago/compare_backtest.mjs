@@ -115,7 +115,7 @@ function fmtTable(res){
 }
 
 // ============================================================
-export { getStock, listStocks, dataSanity, compute, fmtTable, STS, CFG };
+export { getStock, listStocks, dataSanity, compute, fmtTable, scoreAt, STS, CFG };
 
 if (import.meta.url === `file://${process.argv[1]}`.replace(/\\/g,"/") || process.argv[1].endsWith("compare_backtest.mjs")) {
   const stocks = listStocks().map(getStock).filter(Boolean);

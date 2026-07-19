@@ -5,6 +5,9 @@
 import fs from "node:fs";
 import { analyze, buildSeries, tfSeries } from "./src/analysis.generated.mjs";
 import { upsertEntry, loadHistory, seedHistory, evaluate, classifyRegimes, evaluateByRegime, computeTrust, edgeOf, streaks, buildByCode, loadMarketGroups, buildCtx } from "./evaluate.mjs";
+// FOMO Volatility Regime 部分導入タスク: イナゴ盤用に一箇所実装した指標ロジックを再利用（二重管理禁止）。
+// data.js非依存の純粋関数のみを export しているモジュールなので、このスクリプト固有のCSV読み込みとは無関係に使える。
+import { computeAtrPctRank, buildIndicatorSeries, fomoCurrentStatus } from "./inago/build_data_js.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 // ローカルで Webhook URL を入れるなら notify_config.local.json（gitignore済み）を使う。
@@ -173,6 +176,11 @@ for (const [sym, bars] of groups) {
   const row = { code, name, verdict: a.verdict, vIdx: a.vIdx, score: a.score, trend: a.trend, rsi: a.last.rsi, pattern: a.pattern, close: a.last.close, spark: series.slice(-24).map((b) => b.close) };
   const isBuy = wantAll ? a.vIdx >= 3 : a.vIdx === 4;   // strong: 強い買いのみ / all: 買い系
   const isSell = wantAll ? a.vIdx <= 1 : a.vIdx === 0;  // strong: 強い売りのみ / all: 売り系
+  if (isBuy || isSell) {
+    // FOMO Volatility Regime: 買い/売りサインの銘柄だけ「今どの位置にいるか」を付与（表示専用、判定には使わない）
+    row.atrPctRank = computeAtrPctRank(series);
+    row.fomo = fomoCurrentStatus(series, buildIndicatorSeries(series));
+  }
   if (isBuy) buys.push(row);
   else if (isSell) sells.push(row);
 
@@ -447,6 +455,21 @@ const patCell = (r) => {
   const bg = p.status === "confirmed" ? (p.kind === "inverse" ? "rgba(239,90,77,.30)" : "rgba(63,143,214,.30)") : "transparent";
   return `<span class="rsi" style="background:${bg};color:${col}">${t}</span>`;
 };
+// FOMO Volatility Regime: ATR PercentRank（自銘柄比ボラ過熱度。イナゴ盤と同じ色分け＝≥70赤/65-70黄/それ未満無色）
+const atrCell = (r) => {
+  if (r.atrPctRank == null) return '<span class="rsi" style="color:#56627d">—</span>';
+  const col = r.atrPctRank >= 70 ? RED : r.atrPctRank >= 65 ? AMBER : "#8090a8";
+  return `<span class="rsi" style="color:${col}">${r.atrPctRank}</span>`;
+};
+// FOMO Volatility Regime: 「FOMO失速→安値割れ」ルールの現在地（直近20営業日だけを見た表示専用の状態。売買判定には使わない）
+const FOMO_LABEL = { fomo: "🌋過熱", stalling: "⚠失速警戒", trigger: "🔻直近トリガー" };
+const fomoCell = (r) => {
+  const f = r.fomo;
+  if (!f || f.state === "none") return '<span class="rsi" style="color:#56627d">—</span>';
+  const col = f.state === "trigger" ? RED : f.state === "stalling" ? AMBER : "#e09a3f";
+  const extra = f.daysAgo > 0 ? `(${f.daysAgo}日前)` : "";
+  return `<span class="rsi" style="color:${col}">${FOMO_LABEL[f.state]}${extra}</span>`;
+};
 // パターン一致マーク：買い×逆三尊、売り×三尊が同じ銘柄に出ている＝方向が重なる参考情報。
 const ALIGN = (r) => (r.patternAligned ? '<span class="align" title="同じ銘柄に方向が一致するパターンあり">◆一致</span>' : "");
 // 決算接近チップ（±7暦日以内。材料起因の逆行＝テクニカル圏外の識別用）
@@ -461,7 +484,7 @@ const streakCell = (r, dir) => {
 };
 const tableRows = (rows, dir) => rows.map((r) =>
   `<tr><td>${NEW(r)}<b>${r.code}</b></td><td>${r.name} ${ALIGN(r)}${EARN(r)}</td><td>${r.verdict}</td><td class="scell">${scoreCell(r.score)}</td>` +
-  `<td>${patCell(r)}</td>${streakCell(r, dir)}<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
+  `<td>${patCell(r)}</td><td>${atrCell(r)}</td><td>${fomoCell(r)}</td>${streakCell(r, dir)}<td class="spk">${sparkline(r.spark)}</td><td style="text-align:right" class="mono">${fmtPrice(r.close)}</td></tr>`
 ).join("");
 
 // 三尊/逆三尊：チャート付きの大きめカード
@@ -500,8 +523,8 @@ const cards = (rows, breakWord, kind) => rows.length
   ? `<div class="cards">${rows.map((r) => patCard(r, breakWord, kind)).join("")}</div>`
   : '<p class="muted">該当なし</p>';
 
-const buyTable = (rows, dir) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>パターン</th><th>継続</th><th>推移(24日)</th><th>終値</th></tr>` +
-  `${tableRows(rows, dir) || '<tr><td colspan=8 class="muted">該当なし</td></tr>'}</table>`;
+const buyTable = (rows, dir) => `<table><tr><th>コード</th><th>銘柄</th><th>判定</th><th>スコア</th><th>パターン</th><th>ATR%順位</th><th>FOMO状態</th><th>継続</th><th>推移(24日)</th><th>終値</th></tr>` +
+  `${tableRows(rows, dir) || '<tr><td colspan=10 class="muted">該当なし</td></tr>'}</table>`;
 
 // ⚠ 張り付き警告（買い/売り表の直前）と 🔚 本日解除（🆕ブロック相当の位置）
 const fmtSince = (ret) => (ret == null ? "" : `${ret >= 0 ? "+" : ""}${(ret * 100).toFixed(1)}%`);
@@ -631,7 +654,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 </style>
 <h1>罫線スクリーニング</h1>
 <p class="sub">${today}　／　対象 ${total} 銘柄　／　通知条件: ${cfg.signals === "all" ? "買い系・売り系すべて" : "強い買い・強い売りのみ"}</p>
-<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip">パターン: <span style="color:${DOWN}">三尊</span>／<span style="color:${UP}">逆三尊</span>（形成中はネックまでの距離%、確定はネック抜け済み）</span></div>
+<div class="chips"><span class="chip">🆕 前回比の新規</span><span class="chip">週足◎ 週足でも同型</span><span class="chip" style="color:${GREEN}">目標</span><span class="chip" style="color:${RED}">損切</span><span class="chip">RR リスクリワード比</span><span class="chip">パターン: <span style="color:${DOWN}">三尊</span>／<span style="color:${UP}">逆三尊</span>（形成中はネックまでの距離%、確定はネック抜け済み）</span><span class="chip">ATR%順位＝自銘柄比ボラ過熱度(≥70赤/65-70黄)</span><span class="chip">FOMO状態＝🌋過熱／⚠失速警戒／🔻直近トリガー（直近20営業日・表示専用、売買判定には未使用）</span></div>
 ${marketStrip}
 <div class="stats">
 ${stat("🔴 買いサイン", buys.length, nNew(buys), UP)}

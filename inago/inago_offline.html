@@ -102,7 +102,7 @@ function normCandles(arr){
   return (arr||[]).map(c=>({ date:String(c.date??c.t??c.time??c.Date??""), open:+(c.open??c.o??c.Open), high:+(c.high??c.h??c.High),
     low:+(c.low??c.l??c.Low), close:+(c.close??c.c??c.Close), volume:+(c.volume??c.v??c.Volume??0) })).filter(c=>isFinite(c.close)&&isFinite(c.open));
 }
-function getStock(code){ if(!RAW||!RAW.stocks||!RAW.stocks[code])return null; const s=RAW.stocks[code]; const cs=normCandles(s.candles||s); return cs.length?{code,name:s.name||code,candles:cs,since:s.since||null}:null; } // AUDIT-FIX #P-2: since(watchlist追加日)を通す
+function getStock(code){ if(!RAW||!RAW.stocks||!RAW.stocks[code])return null; const s=RAW.stocks[code]; const cs=normCandles(s.candles||s); return cs.length?{code,name:s.name||code,candles:cs,since:s.since||null,atrPctRank:typeof s.atrPctRank==="number"?s.atrPctRank:null}:null; } // AUDIT-FIX #P-2: since(watchlist追加日)を通す
 // AUDIT-FIX #P-2: since以降のバーだけ検証するための開始インデックス（sinceが無ければ0=制限なし）
 function sinceIndex(candles,since){
   if(!since)return 0;
@@ -235,7 +235,9 @@ function renderTool1(root){
 
   function draw(){
     panel.innerHTML = "";
-    const raw = (code && getStock(code) && getStock(code).candles.length>80) ? getStock(code).candles : genArc(42);
+    const stockObj = code ? getStock(code) : null;
+    const atrRank = stockObj ? stockObj.atrPctRank : null; // FOMO Volatility Regime タスク1: ATR PercentRank
+    const raw = (stockObj && stockObj.candles.length>80) ? stockObj.candles : genArc(42);
     const data = raw.map((c,i)=>{ const s=scoreAt(raw,i);
       return {...c, date:c.date||("#"+i), _state:s?s.state:"様子見", _entry:s?s.entryScore:0, _heat:s?s.heatScore:0, _ignite:s&&s.state==="初動候補"}; });
     const shown = onlyIg ? data.map(d=>({...d,_entry:d._ignite?d._entry:0,_heat:d._ignite?d._heat:0})) : data;
@@ -251,6 +253,7 @@ function renderTool1(root){
         codes.length>0 ? $("select",{onchange:e=>{code=e.target.value;draw();}},
           ...codes.map(cd=>{ const s=getStock(cd); const o=$("option",{value:cd},(s&&s.name)||cd); if(cd===code)o.setAttribute("selected","selected"); return o; })
         ) : null,
+        stockObj ? atrRankBadge(atrRank) : null,
         $("label",{class:"toggle"}, $("input",{type:"checkbox",onchange:e=>{onlyIg=e.target.checked;draw();}, ...(onlyIg?{checked:"checked"}:{})}), "初動だけ")
       )
     );
@@ -264,6 +267,12 @@ function renderTool1(root){
   draw();
 }
 function legendDot(color,label){ return $("span",{style:{display:"inline-flex",alignItems:"center",gap:"5px"}}, $("span",{style:{width:"10px",height:"10px",borderRadius:"2px",background:color,display:"inline-block"}}), label); }
+// FOMO Volatility Regime タスク1: ATR PercentRank バッジ（自銘柄比ボラ過熱度。≥70赤 / 65-70黄 / それ未満無色 / null「—」）
+function atrRankBadge(atrRank){
+  const val = atrRank==null ? "—" : String(atrRank);
+  const color = atrRank==null ? C.sub : atrRank>=70 ? C.exit : atrRank>=65 ? C.heat : C.text;
+  return $("span",{style:{fontSize:"11px",color,fontWeight:(atrRank!=null&&atrRank>=65)?"700":"400"}}, `ATR%順位 ${val}`);
+}
 
 function candleChart(data){
   const W=880,H=260,padL=42,padR=8,padT=8,padB=18;
