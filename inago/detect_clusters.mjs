@@ -1,6 +1,9 @@
 // detect_clusters.mjs
 // data.js（罫線アナライザーが書き出した window.INAGO_DATA）を読み、
-// inago_daily.html と同一ロジックで「新テーマ候補（点火クラスタ）」を検知し clusters.json を出力。
+// inago_offline.html とエントリ検知(scoreAt)は同一ロジックで「新テーマ候補（点火クラスタ）」を
+// 検知し clusters.json を出力。ただしクラスタ相関(retSeries)はv6フェーズMで超過リターン版に
+// 変更済みで、inago_offline.html 側は素のリターンのまま（二重メンテのコストの方が高いため。
+// オフライン版は手動観察用、こちらはクラウド日次ジョブ用）。
 // 実行: node detect_clusters.mjs [data.js]
 import fs from "node:fs";
 import vm from "node:vm";
@@ -51,9 +54,15 @@ function scoreAt(c,i){
   return { entryScore:Math.round(entryScore), state, ignited };
 }
 const norm = arr => (arr||[]).map(c=>({
-  open:+(c.open??c.o??c.Open), high:+(c.high??c.h??c.High), low:+(c.low??c.l??c.Low), close:+(c.close??c.c??c.Close), volume:+(c.volume??c.v??c.Volume??0)
+  date:c.date??c.d??c.Date, open:+(c.open??c.o??c.Open), high:+(c.high??c.h??c.High), low:+(c.low??c.l??c.Low), close:+(c.close??c.c??c.Close), volume:+(c.volume??c.v??c.Volume??0)
 })).filter(c=>isFinite(c.close)&&isFinite(c.open));
-function retSeries(c,win){const s=c.slice(-(win+1));const o=[];for(let i=1;i<s.length;i++)o.push(s[i].close/s[i-1].close-1);return o;}
+// v6 M: retSeries は素のリターンではなく「超過リターン」（銘柄の日次リターン − 同日付の東証
+// ユニバース平均リターン）を返す。地合いで底上げされただけの疑似クラスタを減らすため。
+// 日付キーの突き合わせで行う（配列位置合わせは休場ズレで壊れる）。N225指数は外部から読まず
+// data.js内の東証銘柄群から計算する（欠損に強い・追加依存ゼロ）。TH/WIN・pearsonの末尾
+// 位置合わせは変更しない（1コミット1変更）。
+function dateReturnMap(candles){ const m=new Map(); for(let i=1;i<candles.length;i++){ const d=candles[i].date; if(d==null)continue; m.set(d, candles[i].close/candles[i-1].close-1); } return m; }
+function retSeries(st,win){ const dates=[...st.retByDate.keys()]; const tail=dates.slice(-win); return tail.map(d=>st.retByDate.get(d)-(universeAvgByDate.get(d)??0)); }
 function pearson(a,b){const n=Math.min(a.length,b.length);if(n<5)return 0;let sa=0,sb=0;for(let i=0;i<n;i++){sa+=a[a.length-n+i];sb+=b[b.length-n+i];}sa/=n;sb/=n;let num=0,da=0,db=0;for(let i=0;i<n;i++){const x=a[a.length-n+i]-sa,y=b[b.length-n+i]-sb;num+=x*y;da+=x*x;db+=y*y;}const d=Math.sqrt(da*db);return d===0?0:num/d;}
 
 /* ===== 検知 ===== */
@@ -64,11 +73,20 @@ const allStocks = Object.entries(RAW.stocks).map(([code,s])=>({ code, name:s.nam
 const stocks = allStocks.filter(s=>/^[0-9]/.test(s.code));
 console.log(`東証${stocks.length}銘柄を対象（米国株${allStocks.length-stocks.length}銘柄は除外）`);
 
+// v6 M: 日付キーの日次リターンMapと、東証ユニバース平均リターン（日付ごと）を先に作る
+for(const st of stocks) st.retByDate = dateReturnMap(st.candles);
+const universeAvgByDate = new Map();
+{
+  const sums=new Map(), counts=new Map();
+  for(const st of stocks) for(const [d,r] of st.retByDate){ sums.set(d,(sums.get(d)||0)+r); counts.set(d,(counts.get(d)||0)+1); }
+  for(const [d,s] of sums) universeAvgByDate.set(d, s/counts.get(d));
+}
+
 const igniters=[];
 for(const st of stocks){const c=st.candles;const i=c.length-1;const r=scoreAt(c,i);if(!r)continue;
   let recency=99; for(let d=0;d<=K;d++){const rr=scoreAt(c,i-d); if(rr&&rr.ignited){recency=d;break;}}
   const fresh=(r.state==="初動候補")||(recency<=K&&r.state!=="出口"&&r.state!=="過熱");
-  if(fresh) igniters.push({code:st.code,name:st.name,entry:r.entryScore,recency:Math.min(recency,K+1),ret:retSeries(c,WIN)});
+  if(fresh) igniters.push({code:st.code,name:st.name,entry:r.entryScore,recency:Math.min(recency,K+1),ret:retSeries(st,WIN)});
 }
 igniters.sort((a,b)=>b.entry-a.entry);
 
