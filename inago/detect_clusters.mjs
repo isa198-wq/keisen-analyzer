@@ -57,7 +57,12 @@ function retSeries(c,win){const s=c.slice(-(win+1));const o=[];for(let i=1;i<s.l
 function pearson(a,b){const n=Math.min(a.length,b.length);if(n<5)return 0;let sa=0,sb=0;for(let i=0;i<n;i++){sa+=a[a.length-n+i];sb+=b[b.length-n+i];}sa/=n;sb/=n;let num=0,da=0,db=0;for(let i=0;i<n;i++){const x=a[a.length-n+i]-sa,y=b[b.length-n+i]-sb;num+=x*y;da+=x*x;db+=y*y;}const d=Math.sqrt(da*db);return d===0?0:num/d;}
 
 /* ===== 検知 ===== */
-const stocks = Object.entries(RAW.stocks).map(([code,s])=>({ code, name:s.name||code, candles:norm(s.candles||s) })).filter(s=>s.candles.length>=WIN+2);
+// v6 L-1: クラスタ検知の母集団を東証銘柄のみ（コード先頭が数字）に絞る。時差のある市場間の
+// 日次リターン相関は疑似相関になるため（東証の当日は米国の前日終値を織り込む）。
+// イナゴ（テーマ物色）は東証の文脈であり、data.js自体（オフライン版の手動観察用）は変更しない。
+const allStocks = Object.entries(RAW.stocks).map(([code,s])=>({ code, name:s.name||code, candles:norm(s.candles||s) })).filter(s=>s.candles.length>=WIN+2);
+const stocks = allStocks.filter(s=>/^[0-9]/.test(s.code));
+console.log(`東証${stocks.length}銘柄を対象（米国株${allStocks.length-stocks.length}銘柄は除外）`);
 
 const igniters=[];
 for(const st of stocks){const c=st.candles;const i=c.length-1;const r=scoreAt(c,i);if(!r)continue;

@@ -8,6 +8,8 @@ import { upsertEntry, loadHistory, seedHistory, evaluate, classifyRegimes, evalu
 // FOMO Volatility Regime 部分導入タスク: イナゴ盤用に一箇所実装した指標ロジックを再利用（二重管理禁止）。
 // data.js非依存の純粋関数のみを export しているモジュールなので、このスクリプト固有のCSV読み込みとは無関係に使える。
 import { computeAtrPctRank, buildIndicatorSeries, fomoCurrentStatus } from "./inago/build_data_js.mjs";
+// v6 L-2/L-3: クラスタ履歴の記録・答え合わせ（表示専用・売買シグナルではない）
+import { recordClusterHistory, loadClusterHistory, evaluateClusterHistory, clusterEvalSummaryLine } from "./inago/cluster_eval.mjs";
 
 const ROOT = new URL(".", import.meta.url);
 // ローカルで Webhook URL を入れるなら notify_config.local.json（gitignore済み）を使う。
@@ -78,10 +80,14 @@ if (dataWarnings.length) {
 
 // --- 🔥 イナゴ盤: 新テーマ候補（点火クラスタ）。detect_clusters.mjs が書き出す任意ファイル。
 // 無ければ何も表示しない（依存を壊さない）。Grok命名(cluster_names.js)はローカル専用のためここでは読まない。
+// clusterDetectionRan: clusters.jsonの読込・パースに成功したか（v6 L-2/§9-4で「検知失敗」と
+// 「クラスタゼロ」を区別するために使う。失敗時は履歴に記録しない＝欠測扱い）。
 let themeClusters = [];
+let clusterDetectionRan = false;
 try {
-  themeClusters = JSON.parse(fs.readFileSync(new URL("./inago/clusters.json", ROOT), "utf8"));
-} catch { /* 未生成なら非表示 */ }
+  const raw = JSON.parse(fs.readFileSync(new URL("./inago/clusters.json", ROOT), "utf8"));
+  if (Array.isArray(raw)) { themeClusters = raw; clusterDetectionRan = true; }
+} catch { /* 未生成/検知失敗なら非表示・記録もしない */ }
 
 // --- #5 ミニ・ローソク足チャート（出来高バー＋利確/損切りゾーン＋ネックライン＋価格ラベル） ---
 function miniChart(series, p) {
@@ -233,6 +239,14 @@ const total = groups.size;
 // 履歴はコードのみ保存し、成績は毎回最新CSV（分割調整済み）から日付で引くので分割にも安全。
 // 🆕判定・継続日数・解除もすべて history から導出する（state_*.json の読み書きは廃止）。
 const dataDate = [...groups.values()][0].at(-1).date;   // データの最終営業日（=シグナルの基準日）
+
+// --- v6 L-2: クラスタ履歴の記録。検知が実行された日（clusterDetectionRan）のみ記録し、
+// 検知失敗の日は欠測として扱う（§9-4。クラスタゼロの日と区別するため）。
+if (clusterDetectionRan) recordClusterHistory(dataDate, themeClusters);
+// --- v6 L-3: クラスタの答え合わせ（表示専用の参考値。売買判定には使わない）
+const clusterHistory = loadClusterHistory();
+const clusterEvalLine = clusterHistory.length ? clusterEvalSummaryLine(evaluateClusterHistory(clusterHistory)) : null;
+
 // 市況コンテキスト（VIX・BTC等）。public/market_data.csv が無ければ null＝市況表示・記録なしで正常動作
 const marketGroups = loadMarketGroups();
 // 決算接近の警告（フェーズ6）: earnings_dates.json があれば、決算日が基準日の±7暦日以内の銘柄に📅。
@@ -669,6 +683,7 @@ ${removedBlock}
 ${themeClusters.length ? `<h2>🔥 新テーマ候補（点火クラスタ・${themeClusters.length}）</h2>
 <p class="muted">出来高急増・株価上昇が同時に起きた銘柄群を相関ベースで機械抽出したもの。テーマの妥当性・エッジは未検証（仮説の一覧）。</p>
 <ul>${themeClusters.map((c, i) => `<li><b>[${String.fromCharCode(65 + i)}]</b> ${c.members.map((m) => `${m.name}(${m.code})`).join("、")}</li>`).join("")}</ul>` : ""}
+${clusterEvalLine ? `<p class="muted">${clusterEvalLine}</p>` : ""}
 <h2>📈 自動答え合わせ（過去シグナルのその後・蓄積${evalDays}営業日）</h2>
 <p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。<br>
 「直近${RECENT_WINDOW}日窓」は答えが出たシグナル日の直近${RECENT_WINDOW}日分（10日後成績は最短でも10日前のシグナルまでしか反映されない構造的ラグあり）。矢印は全期間との比較: ↗改善 ／ →横ばい ／ ↘悪化。</p>
