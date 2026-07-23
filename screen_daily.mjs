@@ -88,6 +88,12 @@ try {
   const raw = JSON.parse(fs.readFileSync(new URL("./inago/clusters.json", ROOT), "utf8"));
   if (Array.isArray(raw)) { themeClusters = raw; clusterDetectionRan = true; }
 } catch { /* 未生成/検知失敗なら非表示・記録もしない */ }
+// v6 N-2: クラスタ命名（name_clusters.mjs が書き出す任意ファイル）。無ければ現行表示のまま。
+let clusterNames = {};
+try {
+  clusterNames = JSON.parse(fs.readFileSync(new URL("./inago/cluster_names.json", ROOT), "utf8"));
+} catch { /* 未生成/破損なら名前なし表示 */ }
+const clusterKey = (c) => c.members.map((m) => m.code).sort().join(",");
 
 // --- #5 ミニ・ローソク足チャート（出来高バー＋利確/損切りゾーン＋ネックライン＋価格ラベル） ---
 function miniChart(series, p) {
@@ -681,8 +687,15 @@ ${breadthBar()}
 ${dataWarnings.length ? `<div class="caveat" style="border-left-color:${RED}">🚨 データ異常の疑い ${dataWarnings.length}件（分割未調整・混入の可能性。シグナルが壊れているかも）: ${dataWarnings.slice(0, 5).join(" ／ ")}${dataWarnings.length > 5 ? " …" : ""}</div>` : ""}
 ${removedBlock}
 ${themeClusters.length ? `<h2>🔥 新テーマ候補（点火クラスタ・${themeClusters.length}）</h2>
-<p class="muted">出来高急増・株価上昇が同時に起きた銘柄群を相関ベースで機械抽出したもの。テーマの妥当性・エッジは未検証（仮説の一覧）。</p>
-<ul>${themeClusters.map((c, i) => `<li><b>[${String.fromCharCode(65 + i)}]</b> ${c.members.map((m) => `${m.name}(${m.code})`).join("、")}</li>`).join("")}</ul>` : ""}
+<p class="muted">出来高急増・株価上昇が同時に起きた銘柄群を相関ベースで機械抽出したもの。テーマの妥当性・エッジは未検証（仮説の一覧、AI推定・未検証）。</p>
+<ul>${themeClusters.map((c, i) => {
+  const members = c.members.map((m) => `${m.name}(${m.code})`).join("、");
+  const nm = clusterNames[clusterKey(c)];
+  const label = nm
+    ? `${nm.name}（確度${nm.confidence}・${nm.evidence}）: ${members}${nm.catalyst ? `<br><span class="muted">${nm.catalyst}</span>` : ""}`
+    : members;
+  return `<li><b>[${String.fromCharCode(65 + i)}]</b> ${label}</li>`;
+}).join("")}</ul>` : ""}
 ${clusterEvalLine ? `<p class="muted">${clusterEvalLine}</p>` : ""}
 <h2>📈 自動答え合わせ（過去シグナルのその後・蓄積${evalDays}営業日）</h2>
 <p class="muted">勝率＝シグナルの方向どおりに動いた割合。対市場＝同じ期間の全銘柄平均に対する優位性（＋なら市場より良い）。毎日自動で蓄積・更新されます。同じ銘柄が連日カウントされるため n は延べ数。<br>
@@ -790,9 +803,15 @@ async function notify() {
        staleList.map((r) => `${r.side} ${r.code} ${r.name} ${r.days}日目 ${fmtSince(r.sinceRet)}`).join("\n")]
     : [];
   // 🔥 新テーマ候補（点火クラスタ）。銘柄名のみの短い一覧（詳細はレポート）。未検証の仮説である旨を明記。
+  // v6 N-2: テーマ名があれば先頭に添える。4900字対策としてcapは下げず、テーマ名を12字に切り詰める。
+  const clusterLineFor = (c, i) => {
+    const nm = clusterNames[clusterKey(c)];
+    const label = nm ? `${nm.name.slice(0, 12)} ` : "";
+    return `[${String.fromCharCode(65 + i)}] ${label}${c.members.map((m) => m.name).join("、")}`;
+  };
   const clusterLines = themeClusters.length
     ? ["", `🔥 新テーマ候補（${themeClusters.length}・未検証）`,
-       themeClusters.slice(0, LINE_CAP_CLUSTERS).map((c, i) => `[${String.fromCharCode(65 + i)}] ${c.members.map((m) => m.name).join("、")}`).join("\n") +
+       themeClusters.slice(0, LINE_CAP_CLUSTERS).map(clusterLineFor).join("\n") +
        (themeClusters.length > LINE_CAP_CLUSTERS ? `\n…他${themeClusters.length - LINE_CAP_CLUSTERS}件` : "")]
     : [];
   // 自動答え合わせの1行サマリ（10日後成績。カッコ内は対市場の優位性）

@@ -32,6 +32,7 @@ signals/
 inago/data.js
 inago/clusters.json
 inago/cluster_names.js
+inago/cluster_names.json
 
 # ローカル設定・ツール
 .claude/

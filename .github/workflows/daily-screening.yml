@@ -80,6 +80,16 @@ jobs:
           node build_data_js.mjs
           node detect_clusters.mjs data.js
 
+      # v6 フェーズN: クラスタ命名+開示突き合わせ。disclosure_classify.mjsと同じVertex AI
+      # 認証を共用(新規Secret不要)。キー未設定/クラスタ0件なら黙ってスキップする。
+      - name: クラスタ命名（イナゴ盤・Vertex AI Gemini）
+        continue-on-error: true
+        env:
+          VERTEX_AI_PROJECT_ID: ${{ vars.VERTEX_AI_PROJECT_ID }}
+          VERTEX_AI_LOCATION: ${{ vars.VERTEX_AI_LOCATION }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-sa.json
+        run: node name_clusters.mjs
+
       - name: 判定ロジックを App.jsx から再生成
         run: node build_analysis.mjs
 
