@@ -312,8 +312,8 @@ function recordDailyEnvironmentSummaryInner_() {
     + '&hourly=pm2_5,pm10,dust'
     + '&past_days=2&forecast_days=1&timezone=Asia%2FTokyo';
 
-  const forecast = JSON.parse(UrlFetchApp.fetch(forecastUrl, { muteHttpExceptions: true }).getContentText()).hourly;
-  const air = JSON.parse(UrlFetchApp.fetch(airUrl, { muteHttpExceptions: true }).getContentText()).hourly;
+  const forecast = fetchOpenMeteoHourly_(forecastUrl, 'forecast');
+  const air = fetchOpenMeteoHourly_(airUrl, 'air-quality');
 
   const temps = [];
   const pressures = [];
@@ -348,6 +348,28 @@ function recordDailyEnvironmentSummaryInner_() {
   const pressureDiff = (prev && prev.avgPressure != null && avgPressure != null) ? avgPressure - prev.avgPressure : null;
 
   writeEnvLog_(dateStr, maxTemp, minTemp, tempDiff, avgPressure, pressureDiff, avgPm25, avgPm10, maxDust, coarse);
+}
+
+/**
+ * Open-Meteo系APIを叩いてhourlyオブジェクトを返す。
+ * 一時的なエラー応答(429やサーバエラー)の場合は1回だけリトライし、
+ * それでもhourlyが取れなければ原因が分かるエラーを投げる。
+ */
+function fetchOpenMeteoHourly_(url, label) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const code = res.getResponseCode();
+    const body = JSON.parse(res.getContentText());
+    if (code < 300 && body && body.hourly) {
+      return body.hourly;
+    }
+    if (attempt === 0) {
+      Utilities.sleep(2000);
+      continue;
+    }
+    const reason = body && body.reason ? body.reason : ('HTTP ' + code);
+    throw new Error('Open-Meteo ' + label + ' API取得失敗: ' + reason);
+  }
 }
 
 function average_(arr) {
