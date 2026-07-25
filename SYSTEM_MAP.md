@@ -14,7 +14,7 @@
 | `src/App.jsx` | keisen-analyzer/src | 罫線分析UI本体（React） | 稼働中 | `npm run dev`で動くVite構成。build_analysis.mjsがここから判定ロジックを抽出 |
 | `screen_daily.mjs` | keisen-analyzer | 日次ヘッドレススクリーニング＋通知＋HTMLレポート | 稼働中 | GitHub Actions `daily-screening.yml` から毎朝07:30 JST実行 |
 | `fetch_data.py` / `fetch_market.py` / `fetch_earnings.py` | keisen-analyzer | データ取得（yfinance） | 稼働中 | ワークフローに組み込み済み |
-| `evaluate.mjs` / `backtest.mjs` / `factor_check.mjs` / `combo_check.mjs` / `exit_check.mjs` / `momentum_check.mjs` | keisen-analyzer | v1〜v4の検証スクリプト（単体実行専用） | 完了・アーカイブ状態 | 全て採用ゼロという結果を出して役目を終えている（設計書§7に記録済み） |
+| `evaluate.mjs` / `backtest.mjs` / `factor_check.mjs` / `combo_check.mjs` / `exit_check.mjs` / `momentum_check.mjs` / `inago/verify_fomo_stall_exit.mjs` | keisen-analyzer | v1〜v4＋FOMO失速ルールの検証スクリプト（単体実行専用） | 完了・アーカイブ状態 | 全て採用ゼロという結果を出して役目を終えている（設計書§7、FOMOは `inago/FOMO失速ルール有意差分析.md` に記録済み。**検証履歴として意図的に残しているので削除しない**） |
 | `disclosure_fetch.mjs` / `disclosure_classify.mjs` | keisen-analyzer | v5フェーズI: TDnet開示取得・AI分類 | **実装済み・未コミット** | 本セッションで実装。`signals/disclosures.jsonl`に実データ31件（2026-07-02/03）を確認済み。分類はAPIキー未設定のためこのマシンでは未実行 |
 | `.github/workflows/daily-screening.yml` | keisen-analyzer | 日次自動化の定義（GitHub Actions） | **稼働中（実行確認済み）** | WebFetchで実行履歴確認：直近5件（#7〜#11）全て成功。※これは現在push済みの旧版の実績。v5開示ステップ追加分は未push（§4-4参照） |
 | `設計_次期改良.md`〜`v5.md` | keisen-analyzer | 各フェーズの設計書 | 現役（v5が最新・進行中） | §7判断記録に実測値と採否が全て記載済み |
