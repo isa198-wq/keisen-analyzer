@@ -49,6 +49,20 @@ function handleLineEvent_(event) {
     return;
   }
 
+  // 「今月いくら」系の問い合わせ（支出記録より先に判定する。数字を含まないので順序は本来自由だが、
+  // 意図が明確なものから順に落とすほうが読みやすい）
+  if (/^(今月|先月)?(の)?(支出|出費)(は)?(いくら|合計|いくら\?|いくら？)/.test(text)) {
+    replyExpenseTotal_(event); // expense.gsへ委譲
+    return;
+  }
+
+  // 現金支出（「ランチ1200」等）。支出と判定できないものはnullが返り、従来どおりメモへ流れる。
+  const expense = parseExpenseText_(text);
+  if (expense) {
+    handleExpenseEvent_(event, expense); // expense.gsへ委譲
+    return;
+  }
+
   handleMemoEvent_(event, text);
 }
 
