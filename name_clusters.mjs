@@ -100,11 +100,32 @@ async function nameOne(client, cluster, disclosuresByCode) {
   };
 }
 
+// disclosure_classify.mjs と同じ方式（設定漏れは ::warning:: で Run summary に出す／
+// 鍵はファイルの中身まで検証する）。片方だけ直すと同じ穴が残るので、変更時は両方を揃えること。
+function warn(msg) {
+  console.log(`::warning::${msg}`);
+}
+
+function credsReady(credsPath) {
+  try {
+    const raw = fs.readFileSync(credsPath, "utf8").trim();
+    if (!raw) return false;
+    const json = JSON.parse(raw);
+    return Boolean(json.client_email || json.type);
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const projectId = process.env.VERTEX_AI_PROJECT_ID;
   const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (!projectId || !credsPath) {
-    console.log("VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が未設定のため命名をスキップしました。");
+    warn("VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が未設定のため命名をスキップしました。");
+    return;
+  }
+  if (!credsReady(credsPath)) {
+    warn(`サービスアカウント鍵(${credsPath})が空または不正なJSONのため命名をスキップしました（Secret GCP_SERVICE_ACCOUNT_JSON を確認）。`);
     return;
   }
   const clusters = loadClusters();
@@ -128,7 +149,8 @@ async function main() {
     }
   }
   if (ok === 0) {
-    console.log(`全クラスタで命名に失敗したため cluster_names.json は書き出しません（対象${clusters.length}件中0件成功）。`);
+    // 鍵の期限切れ・モデル名変更・クォータ超過はここに落ちる。設定漏れと同じく可視化する。
+    warn(`全クラスタで命名に失敗したため cluster_names.json は書き出しません（対象${clusters.length}件中0件成功）。`);
     return;
   }
   fs.writeFileSync(OUT, JSON.stringify(out, null, 2));

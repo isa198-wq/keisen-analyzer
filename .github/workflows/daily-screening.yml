@@ -12,13 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: チェックアウト
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 前回実行の signals/（history.jsonl / earnings_dates.json）を引き継ぐローリングキャッシュ。
       # fetch_earnings.py が前回までの決算日キャッシュを読めるよう、チェックアウト直後に復元する。
       # key は毎回ユニーク（run_id）にして必ず保存し、restore-keys で直近のキャッシュを復元する。
       - name: 前回の状態を復元（差分通知・決算日キャッシュ）
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: signals
           key: signals-state-${{ github.run_id }}
@@ -26,12 +26,12 @@ jobs:
             signals-state-
 
       - name: Python セットアップ
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Node セットアップ
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -56,9 +56,17 @@ jobs:
       # この段階では screen_daily の出力は一切変えない＝失敗してもスクリーニング自体は継続する。
       # VERTEX_AI_PROJECT_ID未設定 or サービスアカウントJSON未設定なら分類はスキップされ、
       # 取得のみ行われる（disclosure_classify.mjs内で判定）。認証はVertex AI(サービスアカウント)。
+      # Secretが空でもリダイレクト自体は成功するため、空ファイルがそのまま後段に渡ってしまう。
+      # 中身を検証し、壊れていれば消してから警告する（消せば後段のスクリプトが自分で気づいて
+      # ::warning:: 付きでスキップする）。ジョブは止めない＝スクリーニング本体は継続。
       - name: Vertex AIサービスアカウント鍵を書き出し
         if: ${{ vars.VERTEX_AI_PROJECT_ID != '' }}
-        run: echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > /tmp/gcp-sa.json
+        run: |
+          printf '%s' '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > /tmp/gcp-sa.json
+          if ! python3 -c "import json;json.load(open('/tmp/gcp-sa.json'))" 2>/dev/null; then
+            echo "::warning::GCP_SERVICE_ACCOUNT_JSON が空または不正なJSONです。適時開示の分類とクラスタ命名はスキップされます。"
+            rm -f /tmp/gcp-sa.json
+          fi
 
       - name: 適時開示の取得・分類（AI情報レイヤー・蓄積のみ）
         continue-on-error: true
@@ -81,7 +89,8 @@ jobs:
           node detect_clusters.mjs data.js
 
       # v6 フェーズN: クラスタ命名+開示突き合わせ。disclosure_classify.mjsと同じVertex AI
-      # 認証を共用(新規Secret不要)。キー未設定/クラスタ0件なら黙ってスキップする。
+      # 認証を共用(新規Secret不要)。クラスタ0件なら黙ってスキップ、キー未設定/鍵不正/全件失敗は
+      # ::warning:: を出してスキップする(Run summaryのAnnotationsに出る)。
       - name: クラスタ命名（イナゴ盤・Vertex AI Gemini）
         continue-on-error: true
         env:
@@ -106,7 +115,7 @@ jobs:
 
       - name: レポートを成果物として保存
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: signals-report
           path: signals/

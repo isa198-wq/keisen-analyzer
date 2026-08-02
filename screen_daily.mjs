@@ -863,7 +863,8 @@ async function notify() {
   // 本文長は送信の有無に関わらず常に確認できるようにする（4900字制限の監視）
   console.log(`LINE想定本文: ${msg.length}字${msg.length > 4900 ? "（⚠4900字超のため末尾切り詰め）" : ""}`);
   if (!lineToken && !url) {
-    console.log("通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
+    // ::warning:: にして Run summary の Annotations に出す（設定漏れをログを開かずに気づけるように）。
+    console.log("::warning::通知先が未設定（LINE_TOKEN も webhook_url も空）のため、通知はスキップしました（レポートのみ）。");
     return;
   }
   if (buys.length === 0 && sells.length === 0 && tops.length === 0 && invs.length === 0) {

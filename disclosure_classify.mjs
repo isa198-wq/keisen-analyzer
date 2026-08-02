@@ -82,11 +82,36 @@ async function classifyOne(client, record) {
   };
 }
 
+// 設定漏れによるスキップは ::warning:: で出す。console.log だとジョブが緑のままログにしか残らず、
+// 何週間も気づかれない（2026-08-02、payment_reminder が Secret 未設定のまま3週間「緑で成功」
+// していた事例を受けて導入）。Run summary の Annotations 欄に出るので開かなくても見える。
+function warn(msg) {
+  console.log(`::warning::${msg}`);
+}
+
+// 鍵は「envが指すパスに中身のあるJSONが実在するか」まで見る。ワークフローは
+// GOOGLE_APPLICATION_CREDENTIALS を常に固定パスで渡すため、env の有無だけでは
+// 「Secretが空で空ファイルが置かれた」状態を検知できない。
+function credsReady(credsPath) {
+  try {
+    const raw = fs.readFileSync(credsPath, "utf8").trim();
+    if (!raw) return false;
+    const json = JSON.parse(raw);
+    return Boolean(json.client_email || json.type);
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const projectId = process.env.VERTEX_AI_PROJECT_ID;
   const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (!projectId || !credsPath) {
-    console.log("VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が未設定のため分類をスキップしました（取得のみ・ジョブは継続）。");
+    warn("VERTEX_AI_PROJECT_ID / GOOGLE_APPLICATION_CREDENTIALS が未設定のため分類をスキップしました（取得のみ・ジョブは継続）。");
+    return;
+  }
+  if (!credsReady(credsPath)) {
+    warn(`サービスアカウント鍵(${credsPath})が空または不正なJSONのため分類をスキップしました（Secret GCP_SERVICE_ACCOUNT_JSON を確認）。`);
     return;
   }
   const records = loadRecords();
