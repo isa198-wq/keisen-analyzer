@@ -11,6 +11,7 @@
 //   NOTION_MASTER_DB    カードマスタDBのdatabase_id（既定: 下記DEFAULT_MASTER_DB）
 //   LINE_TOKEN / WEBHOOK_URL  どちらか。両方あればLINE優先（screen_daily.mjsと同じ）。
 //   DRY_RUN=1           送信・行作成をせず内容をコンソールに出すだけ。
+//   FORCE_SEND=1        通知対象日でなくても疎通確認用の1通を送る（workflow_dispatch から使う）。
 //
 // 通知タイミング（毎日実行し、条件に合う日だけ送る）:
 //   - 引落日の3日前: 事前リマインド（残高の準備）
@@ -26,6 +27,8 @@ const MASTER_DB = (process.env.NOTION_MASTER_DB || DEFAULT_MASTER_DB).trim();
 const LINE_TOKEN = (process.env.LINE_TOKEN || "").trim();
 const WEBHOOK_URL = (process.env.WEBHOOK_URL || "").trim();
 const DRY_RUN = process.env.DRY_RUN === "1";
+const FORCE_SEND = process.env.FORCE_SEND === "1"; // 日付条件に関係なく1通送って経路を確認する（疎通テスト用）
+let sendFailed = false; // 送信に失敗したらジョブを赤くするためのフラグ
 const NOTION_PAGE_URL = "https://app.notion.com/p/39a141c2acaa81d2b1d7e37fa5cadb19"; // カード支払い管理
 
 const NOTION_HEADERS = {
@@ -144,20 +147,32 @@ function buildMessage(due, daysUntil) {
     if (!byAccount.has(r.account)) byAccount.set(r.account, []);
     byAccount.get(r.account).push(r);
   }
-  const when = daysUntil === 1 ? "明日" : `${daysUntil}日後`;
+  const when = daysUntil === 0 ? "本日" : daysUntil === 1 ? "明日" : `${daysUntil}日後`;
   const lines = [`💳 カード引落リマインド（${mmdd(due[0].date)}・${when}）`];
   let total = 0;
+  let missingAll = 0;
   for (const [account, rows] of byAccount) {
     const sum = rows.reduce((a, r) => a + (r.amount || 0), 0);
     total += sum;
-    const approx = rows.some((r) => r.status === "概算" || r.amount == null) ? "（概算含む）" : "";
-    lines.push("", `【${account}】 ${yen(sum)}${approx}`);
+    // 金額未入力の行は合計に 0 で効くので、額面を素直に読むと「払うものが無い」と誤読する。
+    // 件数を明示して、この数字が下限であることが分かるようにする。
+    const missing = rows.filter((r) => r.amount == null).length;
+    missingAll += missing;
+    const note =
+      missing > 0
+        ? `（金額未入力${missing}件を除く）`
+        : rows.some((r) => r.status === "概算")
+          ? "（概算含む）"
+          : "";
+    lines.push("", `【${account}】 ${yen(sum)}${note}`);
     for (const r of rows) {
-      const flag = r.status === "概算" ? " ※概算" : r.amount == null ? " ※金額未入力" : "";
-      lines.push(`・${r.title} ${r.amount != null ? yen(r.amount) : "?"}${flag}`);
+      // 未入力は「概算」より重い情報なので、状態が概算でも未入力を優先して出す
+      const flag = r.amount == null ? " ※金額未入力" : r.status === "概算" ? " ※概算" : "";
+      lines.push(`・${r.title} ${r.amount != null ? yen(r.amount) : "—"}${flag}`);
     }
   }
-  lines.push("", `合計 ${yen(total)}`, "残高を確認したらNotionの「残高確認済」にチェック", NOTION_PAGE_URL);
+  const totalNote = missingAll > 0 ? `（金額未入力${missingAll}件を除く。実際はこれより多い）` : "";
+  lines.push("", `合計 ${yen(total)}${totalNote}`, "残高を確認したらNotionの「残高確認済」にチェック", NOTION_PAGE_URL);
   return lines.join("\n");
 }
 
@@ -173,24 +188,78 @@ async function send(text) {
       body: JSON.stringify({ messages: [{ type: "text", text }] }),
     });
     if (res.ok) console.log("通知を送信しました（LINE）。");
-    else console.error(`LINE通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    else {
+      sendFailed = true;
+      console.log(`::error::LINE通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    }
   } else if (WEBHOOK_URL) {
+    // Make.com のシナリオは payload の `content` を LINE 本文にマッピングしている
+    // （screen_daily.mjs と同じ約束事）。ここを `message` だけにしていたため、
+    // Webhook は 200 を返すのに LINE には空文字が渡り、8/7の初回リマインドが消えた。
+    // `kind` / `message` は他の受け口のために残す。
     const res = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "payment_reminder", message: text }),
+      body: JSON.stringify({ content: text, kind: "payment_reminder", message: text }),
     });
     if (res.ok) console.log("通知を送信しました（Webhook）。");
-    else console.error(`Webhook通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    else {
+      sendFailed = true;
+      console.log(`::error::Webhook通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+    }
   } else {
-    console.log("通知先が未設定（LINE_TOKEN も WEBHOOK_URL も空）。本文:\n" + text);
+    // 送るべき通知があるのに宛先が無い＝取りこぼし。緑のまま見逃さないようジョブを赤くする。
+    sendFailed = true;
+    console.log("::error::通知先が未設定（LINE_TOKEN も WEBHOOK_URL も空）のため送信できませんでした。");
+    console.log("送れなかった本文:\n" + text);
   }
+}
+
+// 通知すべき日なら送って true、対象外なら何もせず false を返す。
+async function notifyIfDue(rows, today) {
+  // 3日前と1日前だけ通知（毎日送ってスパムにならないように）
+  // 状態=スキップの行はメッセージに出さない（存在自体は anyThisDate 側で「入力済み」扱いのまま）
+  for (const daysUntil of [3, 1]) {
+    const due = rows.filter((r) => daysBetween(today, r.date) === daysUntil && r.status !== "スキップ");
+    if (due.length > 0) {
+      await send(buildMessage(due, daysUntil));
+      return true;
+    }
+  }
+
+  // 定例支払日（10日・25日）が3日後なのに1行も入力がない場合は催促
+  // （行の自動作成が動いていれば通常ここには来ない。作成失敗時のセーフティネット）
+  const ahead3 = new Date(today.getTime() + 3 * 86400000);
+  const day = ahead3.getUTCDate();
+  if (day === 10 || day === 25) {
+    const anyThisDate = rows.some((r) => Math.abs(daysBetween(today, r.date) - 3) <= 2);
+    if (!anyThisDate) {
+      await send(
+        `💳 ${ahead3.getUTCMonth() + 1}/${day} は定例の引落日ですが、「月次支払い」に入力がありません。\n各カードの請求額を入力してください。\n${NOTION_PAGE_URL}`
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
+// 疎通テスト用の本文。直近の未確認行があれば実物と同じ体裁で作る（見た目も一緒に確認できる）。
+function testMessage(rows, today) {
+  const upcoming = rows
+    .filter((r) => r.status !== "スキップ" && daysBetween(today, r.date) >= 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (upcoming.length === 0) {
+    return `💳 カード引落リマインド（疎通テスト）\n通知対象の支払いはありません。\n${NOTION_PAGE_URL}`;
+  }
+  const nearest = upcoming[0].date;
+  return buildMessage(upcoming.filter((r) => r.date === nearest), daysBetween(today, nearest));
 }
 
 async function main() {
   if (!NOTION_TOKEN) {
-    // Secret設定前でもジョブを赤くしない（disclosure_classify と同じスキップ方針）
-    console.log("NOTION_TOKEN が未設定のためスキップしました。");
+    // Secret設定前でもジョブを赤くしない（disclosure_classify と同じスキップ方針）。
+    // ただし ::warning:: にして Run summary の Annotations に出す（ログを開かずに気づけるように）。
+    console.log("::warning::NOTION_TOKEN が未設定のためスキップしました。");
     return;
   }
   const today = todayJST();
@@ -207,30 +276,19 @@ async function main() {
     .filter(Boolean);
   console.log(`未確認の支払い行: ${rows.length}件`);
 
-  // 3日前と1日前だけ通知（毎日送ってスパムにならないように）
-  // 状態=スキップの行はメッセージに出さない（存在自体は anyThisDate 側で「入力済み」扱いのまま）
-  for (const daysUntil of [3, 1]) {
-    const due = rows.filter((r) => daysBetween(today, r.date) === daysUntil && r.status !== "スキップ");
-    if (due.length > 0) {
-      await send(buildMessage(due, daysUntil));
-      return;
+  const notified = await notifyIfDue(rows, today);
+
+  if (!notified) {
+    if (FORCE_SEND) {
+      console.log("FORCE_SEND=1 のため、通知対象日ではありませんが疎通確認の1通を送ります。");
+      await send("【疎通テスト】\n" + testMessage(rows, today));
+    } else {
+      console.log("本日の通知対象なし。");
     }
   }
 
-  // 定例支払日（10日・25日）が3日後なのに1行も入力がない場合は催促
-  // （行の自動作成が動いていれば通常ここには来ない。作成失敗時のセーフティネット）
-  const ahead3 = new Date(today.getTime() + 3 * 86400000);
-  const day = ahead3.getUTCDate();
-  if (day === 10 || day === 25) {
-    const anyThisDate = rows.some((r) => Math.abs(daysBetween(today, r.date) - 3) <= 2);
-    if (!anyThisDate) {
-      await send(
-        `💳 ${ahead3.getUTCMonth() + 1}/${day} は定例の引落日ですが、「月次支払い」に入力がありません。\n各カードの請求額を入力してください。\n${NOTION_PAGE_URL}`
-      );
-      return;
-    }
-  }
-  console.log("本日の通知対象なし。");
+  // 送信に失敗していたらジョブを赤くする（緑＝届いた、と読めるようにするため）
+  if (sendFailed) process.exit(1);
 }
 
 main().catch((e) => {
