@@ -872,6 +872,20 @@ async function notify() {
     return;
   }
 
+  // 送信できなかったことをワークフローに伝えるマーカー。console.error だけだとジョブが緑のまま
+  // 残り、「毎朝届いていたものが静かに来なくなる」形の失敗に気づけない。
+  // （2026-08-08、payment_reminder.mjs が同じ構造で不着を起こし、Webhookが200を返すために
+  //   Actionsも緑・ログも「送信しました」で、8/7の初回リマインドが誰にも気づかれず消えた。）
+  // ワークスペースは毎回チェックアウトし直されるので、前日のマーカーが残ることはない。
+  const markNotifyFailed = (reason) => {
+    console.log(`::error::${reason}`);
+    try {
+      fs.writeFileSync("notify_failed.txt", reason + "\n");
+    } catch (e) {
+      console.log(`::error::マーカーの書き出しに失敗: ${e.message}`);
+    }
+  };
+
   try {
     if (lineToken) {
       // LINE Messaging API：友だち全員へブロードキャスト（テキストは最大5000字）
@@ -882,7 +896,7 @@ async function notify() {
         body: JSON.stringify({ messages: [{ type: "text", text }] }),
       });
       if (res.ok) console.log("通知を送信しました（LINE）。");
-      else console.error(`LINE通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+      else markNotifyFailed(`LINE通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
     } else {
       // Webhook（URLで自動判別）。Make/Zapier等の汎用Webhookには構造化JSONを送る。
       const clip = (s, n) => (s.length > n ? s.slice(0, n) + " …(省略)" : s);
@@ -916,10 +930,10 @@ async function notify() {
         body: JSON.stringify(payload),
       });
       if (res.ok) console.log(`通知を送信しました（${label}）。`);
-      else console.error(`通知の送信に失敗: HTTP ${res.status} ${await res.text()}`);
+      else markNotifyFailed(`通知の送信に失敗（${label}）: HTTP ${res.status} ${await res.text()}`);
     }
   } catch (e) {
-    console.error("通知の送信に失敗:", e.message);
+    markNotifyFailed(`通知の送信に失敗（例外）: ${e.message}`);
   }
 }
 await notify();

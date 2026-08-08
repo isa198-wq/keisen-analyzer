@@ -120,3 +120,14 @@ jobs:
           name: signals-report
           path: signals/
           if-no-files-found: ignore
+
+      # 通知が飛ばなかった日はジョブを赤くする（緑＝届いた、と読めるようにするため）。
+      # 成果物の保存より後に置いてあるので、赤くなってもレポートと状態キャッシュは残る。
+      - name: 通知が飛んだかを確認
+        if: always()
+        run: |
+          if [ -f notify_failed.txt ]; then
+            cat notify_failed.txt
+            exit 1
+          fi
+          echo "通知の送信失敗マーカーなし。"

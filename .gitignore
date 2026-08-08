@@ -39,3 +39,6 @@ inago/cluster_names.json
 
 # Webhook URL を入れるローカル設定（クラウドはGitHub Secretを使う／これはコミットしない）
 notify_config.local.json
+
+# 通知の送信失敗マーカー（screen_daily.mjs が書き、ワークフローが読んで捨てる実行時ファイル）
+notify_failed.txt
